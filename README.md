@@ -1,4 +1,4 @@
 # TripletCoordAttention
 This repository is a PyTorch implementation of our Triplet coordinate attention
 
-![img.png](main/img.png)
+![img.png](images/img.png)
