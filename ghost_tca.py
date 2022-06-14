@@ -3,8 +3,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-import TripletCoordAtt
+
 __all__ = ['ghost_net']
+
+class h_sigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_sigmoid, self).__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return self.relu(x + 3) / 6
+
+
+class h_swish(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_swish, self).__init__()
+        self.sigmoid = h_sigmoid(inplace=inplace)
+
+    def forward(self, x):
+        return x * self.sigmoid(x)
+
+class TripletCoordAtt(nn.Module):
+    def __init__(self, inp, reduction=32):
+        super(TripletCoordAtt, self).__init__()
+        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
+        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
+        self.pool_c = nn.AdaptiveAvgPool2d(1)
+
+        mip = max(8, inp // reduction)
+
+        self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = h_swish()
+
+        self.conv_h = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+        self.conv_c = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x):
+        identity = x
+
+        n, c, h, w = x.size()
+        x_w = self.pool_w(x)
+        x_h = self.pool_h(x).permute(0, 1, 3, 2)
+        x_c = self.pool_c(x).permute(0, 3, 2, 1)
+
+        y = torch.cat([x_w, x_h, x_c], dim=3)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+
+        x_w, x_h, x_c = torch.split(y, [w, h, c], dim=3)
+
+        a_w = self.conv_w(x_w).sigmoid()
+        a_h = self.conv_h(x_h).sigmoid().permute(0, 1, 3, 2)
+        a_c = self.conv_h(x_c).sigmoid().permute(0, 3, 2, 1)
+
+        out = identity * a_w * a_h * a_c
+
+        return out
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -97,7 +154,7 @@ class GhostBottleneck(nn.Module):
     def __init__(self, in_chs, mid_chs, out_chs, dw_kernel_size=3,
                  stride=1, act_layer=nn.ReLU, tca_ratio=0.):
         super(GhostBottleneck, self).__init__()
-        tca = tca_ratio is not None and tca_ratio > 0.
+        has_tca = tca_ratio is not None and tca_ratio > 0.
         self.stride = stride
 
         # Point-wise expansion
@@ -110,11 +167,11 @@ class GhostBottleneck(nn.Module):
                                      groups=mid_chs, bias=False)
             self.bn_dw = nn.BatchNorm2d(mid_chs)
 
-        # Squeeze-and-excitation
+
         if has_tca:
-            self.se = TripletCoordAtt()
+            self.tca = TripletCoordAtt(in_chs)
         else:
-            self.se = None
+            self.tca = None
 
         # Point-wise linear projection
         self.ghost2 = GhostModule(mid_chs, out_chs, relu=False)
@@ -143,8 +200,8 @@ class GhostBottleneck(nn.Module):
             x = self.bn_dw(x)
 
         # Squeeze-and-excitation
-        if self.se is not None:
-            x = self.se(x)
+        if self.tca is not None:
+            x = self.tca(x)
 
         # 2nd ghost bottleneck
         x = self.ghost2(x)
@@ -172,11 +229,11 @@ class GhostNet(nn.Module):
         block = GhostBottleneck
         for cfg in self.cfgs:
             layers = []
-            for k, exp_size, c, se_ratio, s in cfg:
+            for k, exp_size, c, tca_ratio, s in cfg:
                 output_channel = _make_divisible(c * width, 4)
                 hidden_channel = _make_divisible(exp_size * width, 4)
                 layers.append(block(input_channel, hidden_channel, output_channel, k, s,
-                                    se_ratio=se_ratio))
+                                    tca_ratio=tca_ratio))
                 input_channel = output_channel
             stages.append(nn.Sequential(*layers))
 
