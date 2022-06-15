@@ -9,26 +9,39 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from ghost_tca import ghostnet
+from tqdm import tqdm
 from sklearn.metrics import accuracy_score
 
 
 
-def accuracy(y_pred,y_true):
-    y_pred_cls = torch.argmax(nn.Softmax(dim=1)(y_pred),dim=1).data
-    return accuracy_score(y_true.cpu(), y_pred_cls.cpu())
+def accuracy(y_pred, y_true):
+    y_pred_cls = torch.argmax(nn.Softmax(dim=1)(y_pred), dim=1).data
+    return accuracy_score(y_true, y_pred_cls)
 
-def train(valdir):
+def train(dir):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    traindir = os.path.join(dir, 'ILSVRC2012_img_train')
+    valdir = os.path.join(dir, 'ILSVRC2012_img_val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
-    loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(160),
-            transforms.CenterCrop(160),
+    train_loader = torch.utils.data.DataLoader(
+        datasets.ImageFolder(traindir, transforms.Compose([
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
             normalize,
         ])),
         batch_size=args.batch_size, shuffle=True,
+        num_workers=args.workers, pin_memory=True)
+
+    validate_loader = torch.utils.data.DataLoader(
+        datasets.ImageFolder(valdir, transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize,
+        ])),
+        batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
@@ -36,25 +49,21 @@ def train(valdir):
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
-    model_weight_path = "./models/state_dict_73.98.pth"
-    assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
-    pre_weights = torch.load(model_weight_path, map_location=device)
-
-    # delete classifier weights
-    pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    missing_keys, unexpected_keys = model.load_state_dict(pre_dict, strict=False)
     model.to(device)
-    epochs = 64
+    epochs = 100
     log_step_freq = 100
+    # print(model)
+    running_loss = 0.0
+    train_steps = len(train_loader)
+    val_num = len(validate_loader)
+    train_bar = tqdm(train_loader)
 
     for epoch in range(1, epochs + 1):
         # 1，训练循环-------------------------------------------------
-        print(epoch)
         model.train()
-        loss_sum = 0.0
-        metric_sum = 0.0
-        step = 1
-        for step, (features, labels) in enumerate(loader, 1):
+
+
+        for step, (features, labels) in enumerate(train_bar, 1):
             # 梯度清零
             model.optimizer.zero_grad()
 
@@ -67,13 +76,34 @@ def train(valdir):
             loss.backward()
             model.optimizer.step()
 
-            # 打印batch级别日志
-            loss_sum += loss.item()
-            metric_sum += metric.item()
-            if step % log_step_freq == 0:
-                print(("[step = %d] loss: %.3f, " + model.metric_name + ": %.3f") %
-                      (step, loss_sum / step, metric_sum / step))
-    torch.save(model.state_dict(), './models//model.pt')
+            running_loss += loss.item()
+            train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
+                             (epoch, epochs, loss, metric)
+
+        # validate
+        model.eval()
+        acc = 0.0  # accumulate accurate number / epoch
+        with torch.no_grad():
+            val_bar = tqdm(validate_loader)
+            for val_data in val_bar:
+                val_images, val_labels = val_data
+                outputs = model(val_images.to(device))
+                # loss = loss_function(outputs, test_labels)
+                predict_y = torch.max(outputs, dim=1)[1]
+                acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
+
+                val_bar.desc = "valid epoch[{}/{}]".format(epoch + 1,
+                                                           epochs)
+        val_accurate = acc / val_num
+        print('[epoch %d] train_loss: %.3f  val_accuracy: %.3f' %
+              (epoch + 1, running_loss / train_steps, val_accurate))
+
+        if val_accurate > best_acc:
+            best_acc = val_accurate
+            save_path = './models/model' + best_acc + '.pth'
+            torch.save(model.state_dict(), save_path)
+    #
+    # torch.save(model.state_dict(), './models//model.pt')
 
 
 def valid_step(model, features, labels):
@@ -106,5 +136,5 @@ if __name__ == '__main__':
                         help='Number of GPUS to use')
     args = parser.parse_args()
 
-    valdir = os.path.join(args.data, 'ILSVRC2012_img_train')
-    train(valdir)
+
+    train(args.data)
