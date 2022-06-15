@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+from torchsummary import summary
+
 __all__ = ['ghost_net']
 
 class h_sigmoid(nn.Module):
@@ -299,9 +301,18 @@ def ghostnet(**kwargs):
 
 
 if __name__ == '__main__':
-    model = ghostnet()
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = ghostnet().to(device)
     model.eval()
+    model_weight_path = "./models/state_dict_73.98.pth"
+
+    model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
     print(model)
-    input = torch.randn(32, 3, 320, 256)
+    input = torch.randn(1, 3, 320, 256)
+    input=input.to(device)
     y = model(input)
     print(y.size())
+    # torch.onnx.export(model,
+    #                   input,
+    #                   "ghost.onnx", verbose=True)
+    summary(model, (3, 320, 256))  # 输出网络结构
