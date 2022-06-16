@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from mbv2_ca import mbv2_ca
+from ghost_tca2 import ghostnet
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score
 
@@ -45,33 +45,25 @@ def train(dir):
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    model = mbv2_ca(num_classes=args.num_classes)
+    model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
 
     # load pretrain weights
     # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
-    # model_weight_path = "./models/mbv2_ca.pth"
-    # assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
-    # pre_weights = torch.load(model_weight_path, map_location=device)
-    #
-    # # delete classifier weights
-    # pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    # missing_keys, unexpected_keys = model.load_state_dict(pre_dict, strict=False)
+    model_weight_path = "./models/state_dict_73.98.pth"
+    assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
+    pre_weights = torch.load(model_weight_path, map_location=device)
+
+    # delete classifier weights
+    pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
+    missing_keys, unexpected_keys = model.load_state_dict(pre_dict, strict=False)
 
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    # create model
-    model = mbv2_ca(num_classes=1000).to(device)
-    # load model weights
-    model_weight_path = "./mbv2_ca.pth"
-    model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
-
-    # for name, value in model.named_parameters():
-    #     if (name in missing_keys):
-    #         value.requires_grad = True
+    for name, value in model.named_parameters():
+        if (name in missing_keys):
+            value.requires_grad = True
 
     # model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
-    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    model.optimizer = torch.optim.SGD( model.parameters(), lr=0.01)
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
@@ -91,28 +83,28 @@ def train(dir):
     # writer.add_graph(model, input_to_model=None, verbose=False)
     for epoch in range(1, epochs + 1):
         # 1，训练循环-------------------------------------------------
-        # model.train()
-        # train_bar = tqdm(train_loader)
-        # for step, (features, labels) in enumerate(train_bar, 1):
-        #     # 梯度清零
-        #     model.optimizer.zero_grad()
-        #
-        #     # 正向传播求损失
-        #     predictions = model(features.to(device))
-        #     loss = model.loss_func(predictions, labels.to(device))
-        #     metric = model.metric_func(predictions, labels.to(device))
-        #
-        #     # 反向传播求梯度
-        #     loss.backward()
-        #     model.optimizer.step()
-        #
-        #     running_loss += loss.item()
-        #
-        #     metric_sum += metric.item()
-        #     writer.add_scalar('loss', running_loss / step, global_step=step)
-        #     writer.add_scalar('acc', metric_sum / step, global_step=step)
-        #     train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
-        #                      (epoch, epochs, running_loss / step, metric_sum / step)
+        model.train()
+        train_bar = tqdm(train_loader)
+        for step, (features, labels) in enumerate(train_bar, 1):
+            # 梯度清零
+            model.optimizer.zero_grad()
+
+            # 正向传播求损失
+            predictions = model(features.to(device))
+            loss = model.loss_func(predictions, labels.to(device))
+            metric = model.metric_func(predictions, labels.to(device))
+
+            # 反向传播求梯度
+            loss.backward()
+            model.optimizer.step()
+
+            running_loss += loss.item()
+
+            metric_sum += metric.item()
+            writer.add_scalar('loss', running_loss / step, global_step=step)
+            writer.add_scalar('acc', metric_sum / step, global_step=step)
+            train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
+                             (epoch, epochs, running_loss / step, metric_sum / step)
 
 
         # validate
@@ -158,10 +150,10 @@ if __name__ == '__main__':
                         help='path to output files')
     parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
                         help='number of data loading workers (default: 2)')
-    parser.add_argument('-b', '--batch-size', default=64, type=int,
+    parser.add_argument('-b', '--batch-size', default=100, type=int,
                         metavar='N', help='mini-batch size (default: 1)')
-    parser.add_argument('--num-classes', type=int, default=1000,
-                        help='Number classes in dataset')
+    parser.add_argument('--num-classes', type=int,
+                        default=1000, help='Number classes in dataset')
     parser.add_argument('--width', type=float, default=1.0,
                         help='Width ratio (default: 1.0)')
     parser.add_argument('--dropout', type=float, default=0.2, metavar='PCT',

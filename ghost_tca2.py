@@ -50,14 +50,38 @@ class SqueezeExcite(nn.Module):
         self.act1 = act_layer(inplace=True)
         self.conv_expand = nn.Conv2d(reduced_chs, in_chs, 1, bias=True)
 
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
 
+        self.conv1 = nn.Conv2d(in_chs, reduced_chs, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(reduced_chs)
+        self.act = act_layer()
+
+        self.conv_h = nn.Conv2d(reduced_chs, 1, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(reduced_chs, 1, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
+        n, c, h, w = x.size()
+
         x_se = self.avg_pool(x)
         x_se = self.conv_reduce(x_se)
         x_se = self.act1(x_se)
         x_se = self.conv_expand(x_se)
-        x = x * self.gate_fn(x_se)
+
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+
+        x = x * self.gate_fn(x_se) * a_w * a_h
         return x
 
 
@@ -264,7 +288,7 @@ if __name__ == '__main__':
     input = input.to(device)
     y = model(input)
     print(y.size())
-    torch.onnx.export(model,
-                      input,
-                      "ghost.onnx", verbose=True)
+    # torch.onnx.export(model,
+    #                   input,
+    #                   "ghost.onnx", verbose=True)
     summary(model, (3, 320, 256))  # 输出网络结构

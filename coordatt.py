@@ -22,10 +22,9 @@ class h_swish(nn.Module):
 class CoordAtt(nn.Module):
     def __init__(self, inp, oup, reduction=32):
         super(CoordAtt, self).__init__()
-        # self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        # self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        self.pool_w = nn.AvgPool2d(kernel_size=(inp.shape[2], 1), stride=1)
-        self.pool_h = nn.AvgPool2d(kernel_size=(1, inp.shape[3]), stride=1)
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+
         mip = max(8, inp // reduction)
 
         self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
