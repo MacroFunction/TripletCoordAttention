@@ -26,13 +26,13 @@ class h_swish(nn.Module):
         return x * self.sigmoid(x)
 
 class TripletCoordAtt(nn.Module):
-    def __init__(self, inp, reduction=32):
+    def __init__(self, inp, reduction=16):
         super(TripletCoordAtt, self).__init__()
         self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
         self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
         self.pool_c = nn.AdaptiveAvgPool2d(1)
 
-        mip = max(8, inp // reduction)
+        mip = max(4, inp // reduction)
 
         self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
         self.bn1 = nn.BatchNorm2d(mip)
