@@ -1,69 +1,18 @@
-
+# 2020.06.09-Changed for building GhostNet
+#            Huawei Technologies Co., Ltd. <foss@huawei.com>
+"""
+Creates a GhostNet Model as defined in:
+GhostNet: More Features from Cheap Operations By Kai Han, Yunhe Wang, Qi Tian, Jianyuan Guo, Chunjing Xu, Chang Xu.
+https://arxiv.org/abs/1911.11907
+Modified from https://github.com/d-li14/mobilenetv3.pytorch and https://github.com/rwightman/pytorch-image-models
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
 from torchsummary import summary
-
 __all__ = ['ghost_net']
-
-class h_sigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_sigmoid, self).__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return self.relu(x + 3) / 6
-
-
-class h_swish(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_swish, self).__init__()
-        self.sigmoid = h_sigmoid(inplace=inplace)
-
-    def forward(self, x):
-        return x * self.sigmoid(x)
-
-class TripletCoordAtt(nn.Module):
-    def __init__(self, inp, reduction=32):
-        super(TripletCoordAtt, self).__init__()
-        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
-        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
-        self.pool_c = nn.AdaptiveAvgPool2d(1)
-
-        mip = max(8, inp // reduction)
-
-        self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
-        self.bn1 = nn.BatchNorm2d(mip)
-        self.act = h_swish()
-
-        self.conv_h = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_c = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-
-    def forward(self, x):
-        identity = x
-
-        n, c, h, w = x.size()
-        x_w = self.pool_w(x)
-        x_h = self.pool_h(x).permute(0, 1, 3, 2)
-        x_c = self.pool_c(x).permute(0, 3, 2, 1)
-
-        y = torch.cat([x_w, x_h, x_c], dim=3)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
-
-        x_w, x_h, x_c = torch.split(y, [w, h, c], dim=3)
-
-        a_w = self.conv_w(x_w).sigmoid()
-        a_h = self.conv_h(x_h).sigmoid().permute(0, 1, 3, 2)
-        a_c = self.conv_h(x_c).sigmoid().permute(0, 3, 2, 1)
-
-        out = identity * a_w * a_h * a_c
-
-        return out
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -106,14 +55,14 @@ class SqueezeExcite(nn.Module):
         x_se = self.act1(x_se)
         x_se = self.conv_expand(x_se)
         x = x * self.gate_fn(x_se)
-        return x
+        return x    
 
-
+    
 class ConvBnAct(nn.Module):
     def __init__(self, in_chs, out_chs, kernel_size,
                  stride=1, act_layer=nn.ReLU):
         super(ConvBnAct, self).__init__()
-        self.conv = nn.Conv2d(in_chs, out_chs, kernel_size, stride, kernel_size // 2, bias=False)
+        self.conv = nn.Conv2d(in_chs, out_chs, kernel_size, stride, kernel_size//2, bias=False)
         self.bn1 = nn.BatchNorm2d(out_chs)
         self.act1 = act_layer(inplace=True)
 
@@ -129,16 +78,16 @@ class GhostModule(nn.Module):
         super(GhostModule, self).__init__()
         self.oup = oup
         init_channels = math.ceil(oup / ratio)
-        new_channels = init_channels * (ratio - 1)
+        new_channels = init_channels*(ratio-1)
 
         self.primary_conv = nn.Sequential(
-            nn.Conv2d(inp, init_channels, kernel_size, stride, kernel_size // 2, bias=False),
+            nn.Conv2d(inp, init_channels, kernel_size, stride, kernel_size//2, bias=False),
             nn.BatchNorm2d(init_channels),
             nn.ReLU(inplace=True) if relu else nn.Sequential(),
         )
 
         self.cheap_operation = nn.Sequential(
-            nn.Conv2d(init_channels, new_channels, dw_size, 1, dw_size // 2, groups=init_channels, bias=False),
+            nn.Conv2d(init_channels, new_channels, dw_size, 1, dw_size//2, groups=init_channels, bias=False),
             nn.BatchNorm2d(new_channels),
             nn.ReLU(inplace=True) if relu else nn.Sequential(),
         )
@@ -146,17 +95,17 @@ class GhostModule(nn.Module):
     def forward(self, x):
         x1 = self.primary_conv(x)
         x2 = self.cheap_operation(x1)
-        out = torch.cat([x1, x2], dim=1)
-        return out[:, :self.oup, :, :]
+        out = torch.cat([x1,x2], dim=1)
+        return out[:,:self.oup,:,:]
 
 
 class GhostBottleneck(nn.Module):
     """ Ghost bottleneck w/ optional SE"""
 
     def __init__(self, in_chs, mid_chs, out_chs, dw_kernel_size=3,
-                 stride=1, act_layer=nn.ReLU, tca_ratio=0.):
+                 stride=1, act_layer=nn.ReLU, se_ratio=0.):
         super(GhostBottleneck, self).__init__()
-        has_tca = tca_ratio is not None and tca_ratio > 0.
+        has_se = se_ratio is not None and se_ratio > 0.
         self.stride = stride
 
         # Point-wise expansion
@@ -165,30 +114,31 @@ class GhostBottleneck(nn.Module):
         # Depth-wise convolution
         if self.stride > 1:
             self.conv_dw = nn.Conv2d(mid_chs, mid_chs, dw_kernel_size, stride=stride,
-                                     padding=(dw_kernel_size - 1) // 2,
-                                     groups=mid_chs, bias=False)
+                             padding=(dw_kernel_size-1)//2,
+                             groups=mid_chs, bias=False)
             self.bn_dw = nn.BatchNorm2d(mid_chs)
 
-
-        if has_tca:
-            self.tca = TripletCoordAtt(mid_chs)
+        # Squeeze-and-excitation
+        if has_se:
+            self.se = SqueezeExcite(mid_chs, se_ratio=se_ratio)
         else:
-            self.tca = None
+            self.se = None
 
         # Point-wise linear projection
         self.ghost2 = GhostModule(mid_chs, out_chs, relu=False)
-
+        
         # shortcut
         if (in_chs == out_chs and self.stride == 1):
             self.shortcut = nn.Sequential()
         else:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_chs, in_chs, dw_kernel_size, stride=stride,
-                          padding=(dw_kernel_size - 1) // 2, groups=in_chs, bias=False),
+                       padding=(dw_kernel_size-1)//2, groups=in_chs, bias=False),
                 nn.BatchNorm2d(in_chs),
                 nn.Conv2d(in_chs, out_chs, 1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(out_chs),
             )
+
 
     def forward(self, x):
         residual = x
@@ -202,12 +152,12 @@ class GhostBottleneck(nn.Module):
             x = self.bn_dw(x)
 
         # Squeeze-and-excitation
-        if self.tca is not None:
-            x = self.tca(x)
+        if self.se is not None:
+            x = self.se(x)
 
         # 2nd ghost bottleneck
         x = self.ghost2(x)
-
+        
         x += self.shortcut(residual)
         return x
 
@@ -231,19 +181,19 @@ class GhostNet(nn.Module):
         block = GhostBottleneck
         for cfg in self.cfgs:
             layers = []
-            for k, exp_size, c, tca_ratio, s in cfg:
+            for k, exp_size, c, se_ratio, s in cfg:
                 output_channel = _make_divisible(c * width, 4)
                 hidden_channel = _make_divisible(exp_size * width, 4)
                 layers.append(block(input_channel, hidden_channel, output_channel, k, s,
-                                    tca_ratio=tca_ratio))
+                              se_ratio=se_ratio))
                 input_channel = output_channel
             stages.append(nn.Sequential(*layers))
 
         output_channel = _make_divisible(exp_size * width, 4)
         stages.append(nn.Sequential(ConvBnAct(input_channel, output_channel, 1)))
         input_channel = output_channel
-
-        self.blocks = nn.Sequential(*stages)
+        
+        self.blocks = nn.Sequential(*stages)        
 
         # building last several layers
         output_channel = 1280
@@ -272,35 +222,35 @@ def ghostnet(**kwargs):
     Constructs a GhostNet model
     """
     cfgs = [
-        # k, t, c, SE, s
+        # k, t, c, SE, s 
         # stage1
-        [[3, 16, 16, 0, 1]],
+        [[3,  16,  16, 0, 1]],
         # stage2
-        [[3, 48, 24, 0, 2]],
-        [[3, 72, 24, 0, 1]],
+        [[3,  48,  24, 0, 2]],
+        [[3,  72,  24, 0, 1]],
         # stage3
-        [[5, 72, 40, 0.25, 2]],
-        [[5, 120, 40, 0.25, 1]],
+        [[5,  72,  40, 0.25, 2]],
+        [[5, 120,  40, 0.25, 1]],
         # stage4
-        [[3, 240, 80, 0, 2]],
-        [[3, 200, 80, 0, 1],
-         [3, 184, 80, 0, 1],
-         [3, 184, 80, 0, 1],
+        [[3, 240,  80, 0, 2]],
+        [[3, 200,  80, 0, 1],
+         [3, 184,  80, 0, 1],
+         [3, 184,  80, 0, 1],
          [3, 480, 112, 0.25, 1],
          [3, 672, 112, 0.25, 1]
-         ],
+        ],
         # stage5
         [[5, 672, 160, 0.25, 2]],
         [[5, 960, 160, 0, 1],
          [5, 960, 160, 0.25, 1],
          [5, 960, 160, 0, 1],
          [5, 960, 160, 0.25, 1]
-         ]
+        ]
     ]
     return GhostNet(cfgs, **kwargs)
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = ghostnet().to(device)
     model.eval()
@@ -312,7 +262,7 @@ if __name__ == '__main__':
     input=input.to(device)
     y = model(input)
     print(y.size())
-    # torch.onnx.export(model,
-    #                   input,
-    #                   "ghost.onnx", verbose=True)
+    torch.onnx.export(model,
+                      input,
+                      "ghost.onnx", verbose=True)
     summary(model, (3, 320, 256))  # 输出网络结构

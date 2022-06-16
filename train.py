@@ -16,7 +16,7 @@ from sklearn.metrics import accuracy_score
 
 def accuracy(y_pred, y_true):
     y_pred_cls = torch.argmax(nn.Softmax(dim=1)(y_pred), dim=1).data
-    return accuracy_score(y_true, y_pred_cls)
+    return accuracy_score(y_true.cpu(), y_pred_cls.cpu())
 
 def train(dir):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -45,7 +45,23 @@ def train(dir):
         num_workers=args.workers, pin_memory=True)
 
     model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
-    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    # load pretrain weights
+    # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
+    model_weight_path = "./models/state_dict_73.98.pth"
+    assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
+    pre_weights = torch.load(model_weight_path, map_location=device)
+
+    # delete classifier weights
+    pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
+    missing_keys, unexpected_keys = model.load_state_dict(pre_dict, strict=False)
+
+
+    for name, value in model.named_parameters():
+        if (name in missing_keys):
+            value.requires_grad = True
+
+    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
@@ -57,11 +73,11 @@ def train(dir):
     train_steps = len(train_loader)
     val_num = len(validate_loader)
     train_bar = tqdm(train_loader)
-
+    best_acc = 0.0
+    metric_sum = 0.0
     for epoch in range(1, epochs + 1):
         # 1，训练循环-------------------------------------------------
         model.train()
-
 
         for step, (features, labels) in enumerate(train_bar, 1):
             # 梯度清零
@@ -77,8 +93,11 @@ def train(dir):
             model.optimizer.step()
 
             running_loss += loss.item()
+
+            metric_sum += metric.item()
+
             train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
-                             (epoch, epochs, loss, metric)
+                             (epoch, epochs, running_loss / step, metric_sum / step)
 
         # validate
         model.eval()
@@ -92,15 +111,14 @@ def train(dir):
                 predict_y = torch.max(outputs, dim=1)[1]
                 acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
 
-                val_bar.desc = "valid epoch[{}/{}]".format(epoch + 1,
-                                                           epochs)
+                val_bar.desc = "valid epoch[{}/{}]".format(epoch, epochs)
         val_accurate = acc / val_num
         print('[epoch %d] train_loss: %.3f  val_accuracy: %.3f' %
               (epoch + 1, running_loss / train_steps, val_accurate))
 
         if val_accurate > best_acc:
             best_acc = val_accurate
-            save_path = './models/model' + best_acc + '.pth'
+            save_path = './models/model' + str(best_acc) + '.pth'
             torch.save(model.state_dict(), save_path)
     #
     # torch.save(model.state_dict(), './models//model.pt')
@@ -124,7 +142,7 @@ if __name__ == '__main__':
                         help='path to output files')
     parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
                         help='number of data loading workers (default: 2)')
-    parser.add_argument('-b', '--batch-size', default=128, type=int,
+    parser.add_argument('-b', '--batch-size', default=100, type=int,
                         metavar='N', help='mini-batch size (default: 1)')
     parser.add_argument('--num-classes', type=int, default=1000,
                         help='Number classes in dataset')

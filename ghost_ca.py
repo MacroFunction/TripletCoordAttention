@@ -25,47 +25,43 @@ class h_swish(nn.Module):
     def forward(self, x):
         return x * self.sigmoid(x)
 
-class TripletCoordAtt(nn.Module):
-    def __init__(self, inp, reduction=32):
-        super(TripletCoordAtt, self).__init__()
-        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
-        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
-        self.pool_c = nn.AdaptiveAvgPool2d(1)
+class CoordAtt(nn.Module):
+    def __init__(self, inp, oup, reduction=32):
+        super(CoordAtt, self).__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
 
         mip = max(8, inp // reduction)
-
-        self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
+        # print(inp)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
         self.bn1 = nn.BatchNorm2d(mip)
         self.act = h_swish()
 
-        self.conv_h = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_c = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+        self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
         identity = x
 
         n, c, h, w = x.size()
-        x_w = self.pool_w(x)
-        x_h = self.pool_h(x).permute(0, 1, 3, 2)
-        x_c = self.pool_c(x).permute(0, 3, 2, 1)
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
 
-        y = torch.cat([x_w, x_h, x_c], dim=3)
+        y = torch.cat([x_h, x_w], dim=2)
+        # print(y.size())
         y = self.conv1(y)
         y = self.bn1(y)
         y = self.act(y)
 
-        x_w, x_h, x_c = torch.split(y, [w, h, c], dim=3)
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
 
+        a_h = self.conv_h(x_h).sigmoid()
         a_w = self.conv_w(x_w).sigmoid()
-        a_h = self.conv_h(x_h).sigmoid().permute(0, 1, 3, 2)
-        a_c = self.conv_h(x_c).sigmoid().permute(0, 3, 2, 1)
 
-        out = identity * a_w * a_h * a_c
+        out = identity * a_w * a_h
 
         return out
-
-
 def _make_divisible(v, divisor, min_value=None):
     """
     This function is taken from the original tf repo.
@@ -171,7 +167,7 @@ class GhostBottleneck(nn.Module):
 
 
         if has_tca:
-            self.tca = TripletCoordAtt(mid_chs)
+            self.tca = CoordAtt(mid_chs, mid_chs)
         else:
             self.tca = None
 
@@ -308,11 +304,12 @@ if __name__ == '__main__':
 
     model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
     print(model)
+
     input = torch.randn(1, 3, 320, 256)
     input=input.to(device)
     y = model(input)
     print(y.size())
+    summary(model, (3, 320, 256))  # 输出网络结构
     # torch.onnx.export(model,
     #                   input,
     #                   "ghost.onnx", verbose=True)
-    summary(model, (3, 320, 256))  # 输出网络结构
