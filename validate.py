@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from mbv2_ca import mbv2_ca
+from ghost_tca2 import ghostnet
 
 torch.backends.cudnn.benchmark = True
 
@@ -41,18 +41,17 @@ parser.add_argument('--num-gpu', type=int, default=1,
 
 def main():
     args = parser.parse_args()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = mbv2_ca(num_classes=args.num_classes)
-    model_weight_path = "models/mbv2_ca.pth"
-    model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
 
-    # if args.num_gpu > 1:
-    #     model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
-    # elif args.num_gpu < 1:
-    #     model = model
-    # else:
-    #     model = model.cuda()
-    # print('GhostNet created.')
+    model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
+    model.load_state_dict(torch.load('./models/model73.686.pth'))
+
+    if args.num_gpu > 1:
+        model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
+    elif args.num_gpu < 1:
+        model = model
+    else:
+        model = model.cuda()
+    print('GhostNet created.')
     
     valdir = os.path.join(args.data, 'ILSVRC2012_img_val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],

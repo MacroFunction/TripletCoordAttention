@@ -49,7 +49,7 @@ def train(dir):
 
     # load pretrain weights
     # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
-    model_weight_path = "./models/state_dict_73.98.pth"
+    model_weight_path = "./models/model73.686.pth"
     assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
     pre_weights = torch.load(model_weight_path, map_location=device)
 
@@ -63,7 +63,7 @@ def train(dir):
             value.requires_grad = True
 
     # model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
-    model.optimizer = torch.optim.SGD( model.parameters(), lr=0.01)
+    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
@@ -79,7 +79,7 @@ def train(dir):
     running_loss = 0.0
 
     writer = SummaryWriter()
-
+    sum_step = 1
     # writer.add_graph(model, input_to_model=None, verbose=False)
     for epoch in range(1, epochs + 1):
         # 1，训练循环-------------------------------------------------
@@ -101,11 +101,11 @@ def train(dir):
             running_loss += loss.item()
 
             metric_sum += metric.item()
-            writer.add_scalar('loss', running_loss / step, global_step=step)
-            writer.add_scalar('acc', metric_sum / step, global_step=step)
+            writer.add_scalar('loss', running_loss / step, global_step=sum_step)
+            writer.add_scalar('acc', metric_sum / step, global_step=sum_step)
             train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
-                             (epoch, epochs, running_loss / step, metric_sum / step)
-
+                             (epoch, epochs, running_loss / sum_step, metric_sum / sum_step)
+            sum_step = sum_step + 1
 
         # validate
         model.eval()
@@ -119,10 +119,10 @@ def train(dir):
                 predict_y = torch.max(outputs, dim=1)[1]
                 acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
 
-                val_bar.desc = "valid epoch[{}/{}]".format(epoch, epochs)
+                val_bar.desc = "valid epoch[{}/{}] val_accuracy: {}".format(epoch, epochs, acc)
         val_accurate = acc / val_num
-        print('[epoch %d] train_loss: %.3f  val_accuracy: %.3f' %
-              (epoch, running_loss / train_steps, val_accurate))
+        print('[epoch %d]  val_accuracy: %.3f' %
+              (epoch, val_accurate))
 
         if val_accurate > best_acc:
             best_acc = val_accurate
