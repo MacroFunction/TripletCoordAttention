@@ -23,6 +23,7 @@ def accuracy(y_pred, y_true):
 
 def train(dir):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True
     traindir = os.path.join(dir, 'ILSVRC2012_img_train')
     valdir = os.path.join(dir, 'ILSVRC2012_img_val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -52,6 +53,7 @@ def train(dir):
     # load pretrain weights
     # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
     model_weight_path = "./models/state_dict_73.98.pth"
+    pre_model_weight_path = "./models/model72.266.pth"
     assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
     pre_weights = torch.load(model_weight_path, map_location=device)
 
@@ -63,8 +65,8 @@ def train(dir):
     for name, value in model.named_parameters():
         if (name in missing_keys):
             value.requires_grad = True
-
-    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-2, momentum=0.9, weight_decay=4e-5)
+    model.load_state_dict(torch.load(pre_model_weight_path))
+    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5, momentum=0.9, weight_decay=4e-5)
     # model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
 
     scheduler = CosineAnnealingWarmRestarts(model.optimizer, T_0=5)
@@ -87,6 +89,32 @@ def train(dir):
     sum_step = 1
     # writer.add_graph(model, input_to_model=None, verbose=False)
     for epoch in range(1, epochs + 1):
+
+        # validate
+        model.eval()
+        acc = 0.0  # accumulate accurate number / epoch
+        val_step = 1
+        with torch.no_grad():
+            val_bar = tqdm(validate_loader)
+            for val_data in val_bar:
+                val_images, val_labels = val_data
+                outputs = model(val_images.to(device))
+                # loss = loss_function(outputs, test_labels)
+                predict_y = torch.max(outputs, dim=1)[1]
+                acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
+
+                val_bar.desc = "valid epoch[%d/%d] val_accuracy: %.3f " % \
+                               (epoch, epochs, acc / val_step)
+                val_step = val_step + 1
+        val_accurate = acc / val_num
+        print('[epoch %d]  val_accuracy: %.3f' %
+              (epoch, val_accurate))
+
+        if val_accurate > best_acc:
+            best_acc = val_accurate
+            save_path = './models/model' + str(best_acc) + '.pth'
+            torch.save(model.state_dict(), save_path)
+
         # 1，训练循环-------------------------------------------------
         model.train()
         train_bar = tqdm(train_loader)
@@ -112,27 +140,7 @@ def train(dir):
                              (epoch, epochs, running_loss / sum_step, metric_sum / sum_step)
             sum_step = sum_step + 1
 
-        # validate
-        model.eval()
-        acc = 0.0  # accumulate accurate number / epoch
-        with torch.no_grad():
-            val_bar = tqdm(validate_loader)
-            for val_data in val_bar:
-                val_images, val_labels = val_data
-                outputs = model(val_images.to(device))
-                # loss = loss_function(outputs, test_labels)
-                predict_y = torch.max(outputs, dim=1)[1]
-                acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
 
-                val_bar.desc = "valid epoch[{}/{}] val_accuracy: {}".format(epoch, epochs, acc)
-        val_accurate = acc / val_num
-        print('[epoch %d]  val_accuracy: %.3f' %
-              (epoch, val_accurate))
-
-        if val_accurate > best_acc:
-            best_acc = val_accurate
-            save_path = './models/model' + str(best_acc) + '.pth'
-            torch.save(model.state_dict(), save_path)
     #
     # torch.save(model.state_dict(), './models//model.pt')
 
