@@ -49,7 +49,7 @@ def train(dir):
 
     # load pretrain weights
     # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
-    model_weight_path = "./models/model73.686.pth"
+    model_weight_path = "./models/state_dict_73.98.pth"
     assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
     pre_weights = torch.load(model_weight_path, map_location=device)
 
@@ -62,8 +62,8 @@ def train(dir):
         if (name in missing_keys):
             value.requires_grad = True
 
-    # model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
-    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
+    # model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
@@ -101,8 +101,8 @@ def train(dir):
             running_loss += loss.item()
 
             metric_sum += metric.item()
-            writer.add_scalar('loss', running_loss / step, global_step=sum_step)
-            writer.add_scalar('acc', metric_sum / step, global_step=sum_step)
+            writer.add_scalar('loss', running_loss / sum_step, global_step=sum_step)
+            writer.add_scalar('acc', metric_sum / sum_step, global_step=sum_step)
             train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
                              (epoch, epochs, running_loss / sum_step, metric_sum / sum_step)
             sum_step = sum_step + 1
