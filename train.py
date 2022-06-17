@@ -5,6 +5,8 @@ import logging
 import numpy as np
 from collections import OrderedDict
 from tensorboardX import SummaryWriter
+
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -62,8 +64,11 @@ def train(dir):
         if (name in missing_keys):
             value.requires_grad = True
 
-    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
+    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-2, momentum=0.9, weight_decay=4e-5)
     # model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
+
+    scheduler = CosineAnnealingWarmRestarts(model.optimizer, T_0=5)
+
     model.loss_func = nn.CrossEntropyLoss()
     model.metric_func = accuracy
     model.metric_name = "accuracy"
@@ -97,7 +102,7 @@ def train(dir):
             # 反向传播求梯度
             loss.backward()
             model.optimizer.step()
-
+            scheduler.step()
             running_loss += loss.item()
 
             metric_sum += metric.item()
