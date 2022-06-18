@@ -48,26 +48,23 @@ def train(dir):
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+
     model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
 
-    # load pretrain weights
-    # download url: https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
-    model_weight_path = "./models/state_dict_73.98.pth"
-    pre_model_weight_path = "./models/model72.266.pth"
+    model_weight_path = "./models/model73.29.pth"
+
     assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
     pre_weights = torch.load(model_weight_path, map_location=device)
 
-    # delete classifier weights
-    pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    missing_keys, unexpected_keys = model.load_state_dict(pre_dict, strict=False)
+    # pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
+    missing_keys, unexpected_keys = model.load_state_dict(pre_weights, strict=False)
 
-
-    for name, value in model.named_parameters():
-        if (name in missing_keys):
-            value.requires_grad = True
-    model.load_state_dict(torch.load(pre_model_weight_path))
-    model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5, momentum=0.9, weight_decay=4e-5)
-    # model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
+    # for name, value in model.named_parameters():
+    #     if (name in missing_keys):
+    #         value.requires_grad = True
+    # model.load_state_dict(pre_dict)
+    # model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-1, momentum=0.9, weight_decay=4e-5)
+    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
 
     scheduler = CosineAnnealingWarmRestarts(model.optimizer, T_0=5)
 

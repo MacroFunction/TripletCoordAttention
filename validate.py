@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from ghost_tca2 import ghostnet
+from ghostnet import GhostNet
 
 torch.backends.cudnn.benchmark = True
 
@@ -41,10 +41,23 @@ parser.add_argument('--num-gpu', type=int, default=1,
 
 def main():
     args = parser.parse_args()
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = GhostNet()
+    # model.load_state_dict(torch.load('./models/GhostNet_359_0.75786.pt'))
+    model_weight_path = './models/GhostNet_359_0.75786.pt'
+    pre_weights = torch.load(model_weight_path, map_location=device)
 
-    model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
-    model.load_state_dict(torch.load('./models/model73.686.pth'))
+    # model_state_dict = {key[8, -1]: pre_weights['model'][key] for key in
+    #                     pre_weights['model']}
+    model_state_dict = {}
+    for k in pre_weights['model']:
+        model_state_dict[k[7:]] = pre_weights['model'][k]
 
+
+    # delete classifier weights
+    pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
+    missing_keys, unexpected_keys = model.load_state_dict(model_state_dict, strict=False)
+    torch.save(model.state_dict(), './models//model75.78.pth')
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
     elif args.num_gpu < 1:

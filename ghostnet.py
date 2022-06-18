@@ -49,8 +49,6 @@ class SqueezeExcite(nn.Module):
         self.act1 = act_layer(inplace=True)
         self.conv_expand = nn.Conv2d(reduced_chs, in_chs, 1, bias=True)
 
-
-
     def forward(self, x):
         x_se = self.avg_pool(x)
         x_se = self.conv_reduce(x_se)
