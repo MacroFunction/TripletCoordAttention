@@ -62,6 +62,7 @@ class CoordAtt(nn.Module):
         out = identity * a_w * a_h
 
         return out
+
 def _make_divisible(v, divisor, min_value=None):
     """
     This function is taken from the original tf repo.

@@ -14,7 +14,43 @@ import torchvision.datasets as datasets
 from ghost_tca2 import ghostnet
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score
+import torchvision as tv
+import torch as t
 
+
+###############数据加载与预处理
+transform = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))]
+)
+#训练集
+trainset=tv.datasets.CIFAR10(root='/python projects/test/data/',
+               train=True,
+               download=False,
+               transform=transform)
+
+trainloader=t.utils.data.DataLoader(trainset,
+                  batch_size=100,
+                  shuffle=True,
+                  num_workers=0)
+#测试集
+testset=tv.datasets.CIFAR10(root='/python projects/test/data/',
+               train=False,
+               download=False,
+               transform=transform)
+
+testloader=t.utils.data.DataLoader(testset,
+                  batch_size=100,
+                  shuffle=True,
+                  num_workers=0)
+
+
+classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+
+# 优化器
+import torch.optim as optim
+net = ghostnet()
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(net.parameters(), lr=0.001)
 
 
 def accuracy(y_pred, y_true):
@@ -24,30 +60,40 @@ def accuracy(y_pred, y_true):
 def train(dir):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     torch.backends.cudnn.benchmark = True
-    traindir = os.path.join(dir, 'ILSVRC2012_img_train')
-    valdir = os.path.join(dir, 'ILSVRC2012_img_val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-    train_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(traindir, transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=args.batch_size, shuffle=True,
-        num_workers=args.workers, pin_memory=True)
+    # traindir = os.path.join(dir, 'ILSVRC2012_img_train')
+    # valdir = os.path.join(dir, 'ILSVRC2012_img_val')
+    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                  std=[0.229, 0.224, 0.225])
+    # train_loader = torch.utils.data.DataLoader(
+    #     datasets.ImageFolder(traindir, transforms.Compose([
+    #         transforms.Resize(224),
+    #         transforms.CenterCrop(224),
+    #         transforms.ToTensor(),
+    #         normalize,
+    #     ])),
+    #     batch_size=args.batch_size, shuffle=True,
+    #     num_workers=args.workers, pin_memory=True)
+    #
+    # validate_loader = torch.utils.data.DataLoader(
+    #     datasets.ImageFolder(valdir, transforms.Compose([
+    #         transforms.Resize(256),
+    #         transforms.CenterCrop(224),
+    #         transforms.ToTensor(),
+    #         normalize,
+    #     ])),
+    #     batch_size=args.batch_size, shuffle=False,
+    #     num_workers=args.workers, pin_memory=True)
 
-    validate_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
+    # transform = transforms.Compose(
+    #     # B,G,R 三个通道归一化 标准差为 0.5， 方差为0.5
+    #     [transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
+    #      transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))]
+    # )
+    # trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=False, transform=transform)
+    # trainLoader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2)
+    # testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=False, transform=transform)
+    # testLoader = torch.utils.data.DataLoader(testset, batch_size=4, shuffle=False, num_workers=2)
+    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
     model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
 
@@ -57,7 +103,7 @@ def train(dir):
     pre_weights = torch.load(model_weight_path, map_location=device)
 
     # pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    missing_keys, unexpected_keys = model.load_state_dict(pre_weights, strict=False)
+    # missing_keys, unexpected_keys = model.load_state_dict(pre_weights, strict=False)
 
     # for name, value in model.named_parameters():
     #     if (name in missing_keys):
@@ -75,8 +121,8 @@ def train(dir):
     epochs = 100
     log_step_freq = 100
     # print(model)
-    train_steps = len(train_loader)
-    val_num = len(validate_loader)
+    train_steps = len(trainloader)
+    val_num = len(testloader)
 
     best_acc = 0.0
     metric_sum = 0.0
@@ -92,7 +138,7 @@ def train(dir):
         acc = 0.0  # accumulate accurate number / epoch
         val_step = 1
         with torch.no_grad():
-            val_bar = tqdm(validate_loader)
+            val_bar = tqdm(testloader)
             for val_data in val_bar:
                 val_images, val_labels = val_data
                 outputs = model(val_images.to(device))
@@ -114,7 +160,7 @@ def train(dir):
 
         # 1，训练循环-------------------------------------------------
         model.train()
-        train_bar = tqdm(train_loader)
+        train_bar = tqdm(trainloader)
         for step, (features, labels) in enumerate(train_bar, 1):
             # 梯度清零
             model.optimizer.zero_grad()
@@ -163,7 +209,7 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batch-size', default=100, type=int,
                         metavar='N', help='mini-batch size (default: 1)')
     parser.add_argument('--num-classes', type=int,
-                        default=1000, help='Number classes in dataset')
+                        default=10, help='Number classes in dataset')
     parser.add_argument('--width', type=float, default=1.0,
                         help='Width ratio (default: 1.0)')
     parser.add_argument('--dropout', type=float, default=0.2, metavar='PCT',

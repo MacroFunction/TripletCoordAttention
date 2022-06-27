@@ -14,10 +14,10 @@ def train(net, device, epochs, learning_rate,
           weight_decay, dir):
     optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=weight_decay)
     # if loss do not change for 5 epochs, change lr*0.1
-    schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3, verbose=True, eps=1e-5)
-    schedular = GradualWarmupScheduler(optimizer, multiplier=10, total_epoch=10, after_scheduler=schedular_r)
+    schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, patience=5, verbose=True, eps=1e-5)
+    schedular = GradualWarmupScheduler(optimizer, multiplier=3.0, total_epoch=5, after_scheduler=schedular_r)
     #schedular = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, eta_min=1e-5, T_max=5)
-    initepoch = 0
+    initepoch = 5
     batch_size = 100
     loss = nn.CrossEntropyLoss()
     best_test_acc = 0
@@ -48,15 +48,23 @@ def train(net, device, epochs, learning_rate,
         ])),
         batch_size=batch_size, shuffle=False,
         num_workers=nw, pin_memory=True)
-    sum_step = 1
-    running_loss = 0.0
-    correct = 0
-    total = 0
+    # for epoch in range(initepoch, epochs):  # loop over the dataset multiple times
+    #     print('epoch %d,  lr: %.7f'
+    #           % (epoch + 1, optimizer.param_groups[0]['lr']))
+    #     print(schedular.last_epoch)
+    #     schedular.step(metrics=1)
+    global_step = 1
     for epoch in range(initepoch, epochs):  # loop over the dataset multiple times
+        sum_step = 1
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+
 
         net.train()
         timestart = time.time()
-        #print(optimizer.param_groups[0]['lr'])
+
         train_bar = tqdm(train_loader)
         for i, data in enumerate(train_bar):
             # get the inputs
@@ -75,19 +83,19 @@ def train(net, device, epochs, learning_rate,
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             train_acc = 100.0 * correct / total
-            writer.add_scalar('loss', running_loss / sum_step, global_step=sum_step)
-            writer.add_scalar('acc', train_acc, global_step=sum_step)
-            train_bar.desc = ("train epoch[%d/%d] loss:%.3f train_acc:%.3f") % \
-                             (epoch, epochs, running_loss / sum_step, train_acc)
+            writer.add_scalar('loss', running_loss / sum_step, global_step=global_step)
+            writer.add_scalar('acc', train_acc, global_step=global_step)
+            train_bar.desc = "train epoch[%d/%d] loss:%.3f train_acc:%.3f lr:%.7f" % \
+                             (epoch, epochs, running_loss / sum_step, train_acc, optimizer.param_groups[0]['lr'])
             sum_step += 1
+            global_step += 1
+            # schedular.step(metrics=train_acc)
         print('epoch %d, loss: %.4f,tran Acc: %.3f%%,time:%3f sec, lr: %.7f'
               % (epoch+1, running_loss / sum_step, train_acc, time.time() - timestart, optimizer.param_groups[0]['lr']))
         print(schedular.last_epoch)
 
         # test
-
         net.eval()
-
         valtotal = 0
         valcorrect = 0
         with torch.no_grad():
@@ -103,12 +111,12 @@ def train(net, device, epochs, learning_rate,
             print('test Acc: %.3f%%' % (test_acc))
             # if epoch > 30:
             #     torch.save(net.state_dict(), '/root/Desktop/cifar-100/checkpoint_512_512_100/' + str(test_acc) + '_Resnet18.pth')
-            if test_acc > best_test_acc:
-                print('find best! save at checkpoint/cnn_best.pth')
-                best_test_acc = test_acc
-                best_epoch = epoch
-                torch.save(net.state_dict(),
-                           './models/best_' + str(best_test_acc) + '_' + str(train_acc) + '.pth')
+            # if test_acc > best_test_acc:
+            #     print('find best! save at checkpoint/cnn_best.pth')
+            #     best_test_acc = test_acc
+            #     best_epoch = epoch
+            torch.save(net.state_dict(),
+                       './models/best_' + str(test_acc) + '_' + str(train_acc) + '.pth')
 
         schedular.step(metrics=test_acc)
 
@@ -119,9 +127,9 @@ def train(net, device, epochs, learning_rate,
 if __name__ == '__main__':
     model = ghostnet(num_classes=1000, width=1.0, dropout=0.2)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # model_weight_path = "./models/model73.29.pth"
-    # pre_weights = torch.load(model_weight_path, map_location=device)
-    # model.load_state_dict(pre_weights, strict=False)
+    model_weight_path = "./models/model73.59.pth"
+    pre_weights = torch.load(model_weight_path, map_location=device)
+    model.load_state_dict(pre_weights, strict=False)
     model.to(device)
-    train(net=model, device=device, epochs=100, learning_rate=2e-1,
+    train(net=model, device=device, epochs=200, learning_rate=0.0000892,
           weight_decay=4e-5, dir='D:/ImageNet/data/ImageNet2012')
