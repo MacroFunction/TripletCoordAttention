@@ -302,6 +302,8 @@ csv_write_fca_acc = csv.writer(fca_acc)
 csv_write_fca_loss.writerows(ca_res50_loss)
 csv_write_fca_acc.writerows(ca_res50_acc)
 
+
+
 # 模型准备
 res50 = paddle.vision.models.resnet50(num_classes=10)
 res50.train()
