@@ -6,11 +6,13 @@ import torch.nn.functional as F
 import torchvision
 import hiddenlayer as h
 from torchsummary import summary
+
 count = 0
 
 AdaptiveAvgPool2dSize = [56, 56, 28, 28, 28, 14, 14, 14, 14, 14, 14, 14, 7, 7, 7, 7]
 
 __all__ = ['mbv2_ca']
+
 
 class ConvBNReLU(nn.Sequential):
     def __init__(self, in_planes, out_planes, kernel_size=3, stride=1, groups=1):
@@ -21,6 +23,7 @@ class ConvBNReLU(nn.Sequential):
             nn.ReLU6(inplace=True)
         )
 
+
 class h_sigmoid(nn.Module):
     def __init__(self, inplace=True):
         super(h_sigmoid, self).__init__()
@@ -28,6 +31,7 @@ class h_sigmoid(nn.Module):
 
     def forward(self, x):
         return self.relu(x + 3) / 6
+
 
 class h_swish(nn.Module):
     def __init__(self, inplace=True):
@@ -37,49 +41,42 @@ class h_swish(nn.Module):
     def forward(self, x):
         return x * self.sigmoid(x)
 
+
 class swish(nn.Module):
     def forward(self, x):
         return x * torch.sigmoid(x)
-    
-class CoordAtt(nn.Module):
-    def __init__(self, inp, reduction=16):
-        super(CoordAtt, self).__init__()
+
+
+class TripletCoordAtt(nn.Module):
+    def __init__(self, k_size=3):
+        super(TripletCoordAtt, self).__init__()
         self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
         self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
         self.pool_c = nn.AdaptiveAvgPool2d(1)
 
-        mip = max(4, inp // reduction)
-
-        self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
-        self.bn1 = nn.BatchNorm2d(mip)
-        self.act = h_swish()
-
-        self.conv_h = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_c = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+        self.conv_h = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_w = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
 
     def forward(self, x):
         identity = x
 
         n, c, h, w = x.size()
-        x_w = self.pool_w(x)
-        x_h = self.pool_h(x).permute(0, 1, 3, 2)
-        x_c = self.pool_c(x).permute(0, 3, 2, 1)
+        x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
+        x_h = self.pool_h(x).squeeze(-1)
+        x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
 
-        y = torch.cat([x_w, x_h, x_c], dim=3)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
+        o_w = self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2)
+        o_h = self.conv_w(x_h).unsqueeze(-1)
+        o_c = self.conv_w(x_c).transpose(-1, -2).unsqueeze(-1)
 
-        x_w, x_h, x_c = torch.split(y, [w, h, c], dim=3)
+        out = identity * o_w * o_h * o_c
 
-        a_w = self.conv_w(x_w).sigmoid()
-        a_h = self.conv_h(x_h).sigmoid().permute(0, 1, 3, 2)
-        a_c = self.conv_h(x_c).sigmoid().permute(0, 3, 2, 1)
+        return out
 
-        y = identity * a_w * a_h * a_c
-
-        return y
 
 def _make_divisible(v, divisor, min_value=None):
     """
@@ -116,6 +113,7 @@ def conv_1x1_bn(inp, oup):
         nn.ReLU6(inplace=True)
     )
 
+
 class InvertedResidual(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio):
         super(InvertedResidual, self).__init__()
@@ -145,7 +143,7 @@ class InvertedResidual(nn.Module):
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # coordinate attention
-                CoordAtt(hidden_dim, hidden_dim),
+                TripletCoordAtt(),
                 # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
@@ -158,17 +156,18 @@ class InvertedResidual(nn.Module):
         else:
             return y
 
+
 class MBV2_CA(nn.Module):
     def __init__(self, num_classes=1000, width_mult=1.):
         super(MBV2_CA, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = [
             # t, c, n, s
-            [1,  16, 1, 1],
-            [6,  24, 2, 2],
-            [6,  32, 3, 2],
-            [6,  64, 4, 2],
-            [6,  96, 3, 1],
+            [1, 16, 1, 1],
+            [6, 24, 2, 2],
+            [6, 32, 3, 2],
+            [6, 64, 4, 2],
+            [6, 96, 3, 1],
             [6, 160, 3, 2],
             [6, 320, 1, 1],
         ]
@@ -190,9 +189,9 @@ class MBV2_CA(nn.Module):
         # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.avgpool = nn.AvgPool2d((7, 7))
         self.classifier = nn.Sequential(
-                nn.Dropout(0.1),
-                nn.Linear(output_channel, num_classes)
-                )
+            nn.Dropout(0.1),
+            nn.Linear(output_channel, num_classes)
+        )
 
         self._initialize_weights()
 
@@ -207,9 +206,9 @@ class MBV2_CA(nn.Module):
 
     def _initialize_weights(self):
         for m in self.modules():
-            #print(m)
+            # print(m)
             if isinstance(m, nn.Conv2d):
-                #print(m.weight.size())
+                # print(m.weight.size())
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
                 if m.bias is not None:
@@ -223,7 +222,8 @@ class MBV2_CA(nn.Module):
 
 
 def mbv2_ca(**kwargs):
-    return  MBV2_CA(**kwargs)
+    return MBV2_CA(**kwargs)
+
 
 def main():
     dummy_input = torch.randn(1, 3, 224, 224)
@@ -244,12 +244,12 @@ def main():
     # parameters = model.parameters()
     # i = 0
     # for p in parameters:
-        # numpy_para = p.detach().cpu().numpy()
-        # print(i)
-        # i = i + 1
-        # print(p)
-        # print(numpy_para.shape)
-        # print(numpy_para)
+    # numpy_para = p.detach().cpu().numpy()
+    # print(i)
+    # i = i + 1
+    # print(p)
+    # print(numpy_para.shape)
+    # print(numpy_para)
     # input_names = ["input"]
     # output_names = ["output"]
     # torch.onnx.export(model,
@@ -259,6 +259,7 @@ def main():
     # torch.no_grad()
 
     summary(model, (3, 224, 224))  # 输出网络结构
+
 
 if __name__ == '__main__':
     main()
