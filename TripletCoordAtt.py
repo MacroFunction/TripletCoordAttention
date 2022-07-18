@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torchsummary import summary
 
 
 class TripletCoordAtt(nn.Module):
@@ -16,6 +17,7 @@ class TripletCoordAtt(nn.Module):
         self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
                                 padding=(k_size - 1) // 2, bias=False)
 
+        self.sigmoid = nn.Sigmoid()
     def forward(self, x):
         identity = x
 
@@ -24,18 +26,38 @@ class TripletCoordAtt(nn.Module):
         x_h = self.pool_h(x).squeeze(-1)
         x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
 
-        o_w = self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2)
-        o_h = self.conv_w(x_h).unsqueeze(-1)
-        o_c = self.conv_w(x_c).transpose(-1, -2).unsqueeze(-1)
+        o_h = self.sigmoid(self.conv_h(x_h).unsqueeze(-1))
+        o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
+        o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
 
         out = identity * o_w * o_h * o_c
-
         return out
+
+
 def main():
     attention_block = TripletCoordAtt()
-    input = torch.rand([4,64,32,32])
+    input = torch.rand([4, 64, 32, 32])
     output = attention_block(input)
     print(input.size(), output.size())
+
+
+if __name__ == '__main__':
+    main()
+
+
+def main():
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    attention_block = TripletCoordAtt().to(device)
+    input = torch.rand([4,64,32,32])
+    input = input.to(device)
+    output = attention_block(input)
+    print(attention_block)
+    # # model.load_state_dict(torch.load('./models/model75.78.pth'), strict=False)
+    #
+    # # x = torch.rand(size=(3, 224, 224))
+    summary(attention_block, (3, 224, 224))
+    # print(input.size(), output.size())
 
 if __name__ == '__main__':
     main()

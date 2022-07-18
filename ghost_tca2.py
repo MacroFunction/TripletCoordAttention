@@ -39,51 +39,32 @@ def hard_sigmoid(x, inplace: bool = False):
         return F.relu6(x + 3.) / 6.
 
 
-class SqueezeExcite(nn.Module):
-    def __init__(self, in_chs, se_ratio=0.25, reduced_base_chs=None,
-                 act_layer=nn.ReLU, gate_fn=hard_sigmoid, divisor=4, **_):
-        super(SqueezeExcite, self).__init__()
-        self.gate_fn = gate_fn
-        reduced_chs = _make_divisible((reduced_base_chs or in_chs) * se_ratio, divisor)
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv_reduce = nn.Conv2d(in_chs, reduced_chs, 1, bias=True)
-        self.act1 = act_layer(inplace=True)
-        self.conv_expand = nn.Conv2d(reduced_chs, in_chs, 1, bias=True)
+class TripletCoordAtt(nn.Module):
+    def __init__(self, k_size=5):
+        super(TripletCoordAtt, self).__init__()
+        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
+        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
+        self.pool_c = nn.AdaptiveAvgPool2d(1)
 
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.conv_h = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_w = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
 
-        self.conv1 = nn.Conv2d(in_chs, reduced_chs, kernel_size=1, stride=1, padding=0)
-        self.bn1 = nn.BatchNorm2d(reduced_chs)
-        self.act = act_layer()
-
-        self.conv_h = nn.Conv2d(reduced_chs, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(reduced_chs, 1, kernel_size=1, stride=1, padding=0)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        n, c, h, w = x.size()
+        x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
+        x_h = self.pool_h(x).squeeze(-1)
+        x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
 
-        x_se = self.avg_pool(x)
-        x_se = self.conv_reduce(x_se)
-        x_se = self.act1(x_se)
-        x_se = self.conv_expand(x_se)
+        o_h = self.sigmoid(self.conv_h(x_h).unsqueeze(-1))
+        o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
+        o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
 
-        x_h = self.pool_h(x)
-        x_w = self.pool_w(x).permute(0, 1, 3, 2)
-        y = torch.cat([x_h, x_w], dim=2)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
-
-        x_h, x_w = torch.split(y, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
-
-        a_h = self.conv_h(x_h).sigmoid()
-        a_w = self.conv_w(x_w).sigmoid()
-
-        x = x * self.gate_fn(x_se) * a_w * a_h
-        return x
-
+        return x * o_w * o_h * o_c
 
 class ConvBnAct(nn.Module):
     def __init__(self, in_chs, out_chs, kernel_size,
@@ -147,9 +128,9 @@ class GhostBottleneck(nn.Module):
 
         # Squeeze-and-excitation
         if has_se:
-            self.se = SqueezeExcite(mid_chs, se_ratio=se_ratio)
+            self.tca = TripletCoordAtt()
         else:
-            self.se = None
+            self.tca = None
 
         # Point-wise linear projection
         self.ghost2 = GhostModule(mid_chs, out_chs, relu=False)
@@ -178,8 +159,8 @@ class GhostBottleneck(nn.Module):
             x = self.bn_dw(x)
 
         # Squeeze-and-excitation
-        if self.se is not None:
-            x = self.se(x)
+        if self.tca is not None:
+            x = self.tca(x)
 
         # 2nd ghost bottleneck
         x = self.ghost2(x)

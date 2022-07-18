@@ -1,222 +1,123 @@
 import os
-import time
-import argparse
-import logging
-import numpy as np
-from collections import OrderedDict
-from tensorboardX import SummaryWriter
+import sys
 
-from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-from ghost_tca2 import ghostnet
-from tqdm import tqdm
-from sklearn.metrics import accuracy_score
-import torchvision as tv
-import torch as t
-
-
-###############数据加载与预处理
-transform = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))]
-)
-#训练集
-trainset=tv.datasets.CIFAR10(root='/python projects/test/data/',
-               train=True,
-               download=False,
-               transform=transform)
-
-trainloader=t.utils.data.DataLoader(trainset,
-                  batch_size=100,
-                  shuffle=True,
-                  num_workers=0)
-#测试集
-testset=tv.datasets.CIFAR10(root='/python projects/test/data/',
-               train=False,
-               download=False,
-               transform=transform)
-
-testloader=t.utils.data.DataLoader(testset,
-                  batch_size=100,
-                  shuffle=True,
-                  num_workers=0)
-
-
-classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-
-
-# 优化器
 import torch.optim as optim
-net = ghostnet()
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(net.parameters(), lr=0.001)
+from torchvision import transforms, datasets
+from tqdm import tqdm
+
+from warmup_scheduler import GradualWarmupScheduler
+from ghostnet_tca import ghostnet
+from LabelSmoothing import LSR
 
 
-def accuracy(y_pred, y_true):
-    y_pred_cls = torch.argmax(nn.Softmax(dim=1)(y_pred), dim=1).data
-    return accuracy_score(y_true.cpu(), y_pred_cls.cpu())
-
-def train(dir):
+def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    torch.backends.cudnn.benchmark = True
-    # traindir = os.path.join(dir, 'ILSVRC2012_img_train')
-    # valdir = os.path.join(dir, 'ILSVRC2012_img_val')
-    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-    #                                  std=[0.229, 0.224, 0.225])
-    # train_loader = torch.utils.data.DataLoader(
-    #     datasets.ImageFolder(traindir, transforms.Compose([
-    #         transforms.Resize(224),
-    #         transforms.CenterCrop(224),
-    #         transforms.ToTensor(),
-    #         normalize,
-    #     ])),
-    #     batch_size=args.batch_size, shuffle=True,
-    #     num_workers=args.workers, pin_memory=True)
-    #
-    # validate_loader = torch.utils.data.DataLoader(
-    #     datasets.ImageFolder(valdir, transforms.Compose([
-    #         transforms.Resize(256),
-    #         transforms.CenterCrop(224),
-    #         transforms.ToTensor(),
-    #         normalize,
-    #     ])),
-    #     batch_size=args.batch_size, shuffle=False,
-    #     num_workers=args.workers, pin_memory=True)
+    print("using {} device.".format(device))
 
-    # transform = transforms.Compose(
-    #     # B,G,R 三个通道归一化 标准差为 0.5， 方差为0.5
-    #     [transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
-    #      transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))]
-    # )
-    # trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=False, transform=transform)
-    # trainLoader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2)
-    # testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=False, transform=transform)
-    # testLoader = torch.utils.data.DataLoader(testset, batch_size=4, shuffle=False, num_workers=2)
-    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+    batch_size = 128
+    epochs = 360
 
-    model = ghostnet(num_classes=args.num_classes, width=args.width, dropout=args.dropout)
+    data_transform = {
+        "train": transforms.Compose([transforms.RandomResizedCrop(224),
+                                     transforms.RandomHorizontalFlip(),
+                                     transforms.ToTensor(),
+                                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])]),
+        "val": transforms.Compose([transforms.Resize(256),
+                                   transforms.CenterCrop(224),
+                                   transforms.ToTensor(),
+                                   transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])}
 
-    model_weight_path = "./models/model73.29.pth"
+    data_root = os.path.abspath("H:/")  # get data root path
+    image_path = os.path.join(data_root, "ImageNet")  # flower data set path
+    assert os.path.exists(image_path), "{} path does not exist.".format(image_path)
 
-    assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
-    pre_weights = torch.load(model_weight_path, map_location=device)
+    train_dataset = datasets.ImageFolder(root=os.path.join(image_path, "train"),
+                                         transform=data_transform["train"])
+    train_num = len(train_dataset)
 
-    # pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    # missing_keys, unexpected_keys = model.load_state_dict(pre_weights, strict=False)
+    nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 6])  # number of workers
+    print('Using {} dataloader workers every process'.format(nw))
 
-    # for name, value in model.named_parameters():
-    #     if (name in missing_keys):
-    #         value.requires_grad = True
-    # model.load_state_dict(pre_dict)
-    # model.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-1, momentum=0.9, weight_decay=4e-5)
-    model.optimizer = torch.optim.SGD(model.parameters(), lr=0.00001)
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=batch_size, shuffle=True,
+                                               num_workers=nw)
 
-    scheduler = CosineAnnealingWarmRestarts(model.optimizer, T_0=5)
+    validate_dataset = datasets.ImageFolder(root=os.path.join(image_path, "val"),
+                                            transform=data_transform["val"])
+    val_num = len(validate_dataset)
+    validate_loader = torch.utils.data.DataLoader(validate_dataset,
+                                                  batch_size=batch_size, shuffle=False,
+                                                  num_workers=nw)
 
-    model.loss_func = nn.CrossEntropyLoss()
-    model.metric_func = accuracy
-    model.metric_name = "accuracy"
-    model.to(device)
-    epochs = 100
-    log_step_freq = 100
-    # print(model)
-    train_steps = len(trainloader)
-    val_num = len(testloader)
+    print("using {} images for training, {} images for validation.".format(train_num,
+                                                                           val_num))
+
+    # create model
+    net = ghostnet()
+    net.to(device)
+
+    # define loss function
+    loss_function = LSR()
+
+    optimizer = optim.SGD(net.parameters(), lr=0.4, momentum=0.9, weight_decay=4e-5)
+    # if loss do not change for 5 epochs, change lr*0.1
+    schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3,
+                                                             verbose=True, eps=1e-5)
+    schedular = GradualWarmupScheduler(optimizer, multiplier=1.0, total_epoch=20, after_scheduler=schedular_r)
 
     best_acc = 0.0
-    metric_sum = 0.0
-    running_loss = 0.0
+    # save_path = './MobileNetV2.pth'
+    train_steps = len(train_loader)
+    for epoch in range(epochs):
+        # train
+        net.train()
+        running_loss = 0.0
+        train_bar = tqdm(train_loader, file=sys.stdout)
+        for step, data in enumerate(train_bar):
+            images, labels = data
+            optimizer.zero_grad()
+            logits = net(images.to(device))
+            loss = loss_function(logits, labels.to(device))
+            loss.backward()
+            optimizer.step()
 
-    writer = SummaryWriter()
-    sum_step = 1
-    # writer.add_graph(model, input_to_model=None, verbose=False)
-    for epoch in range(1, epochs + 1):
+            # print statistics
+            running_loss += loss.item()
+
+            train_bar.desc = "train epoch[{}/{}] loss:{:.3f} lr:{:.7f}".format(epoch + 1,
+                                                                               epochs,
+                                                                               loss, optimizer.param_groups[0]['lr'])
+
+            # print(schedular.last_epoch)
 
         # validate
-        model.eval()
+        net.eval()
         acc = 0.0  # accumulate accurate number / epoch
-        val_step = 1
         with torch.no_grad():
-            val_bar = tqdm(testloader)
+            val_bar = tqdm(validate_loader, file=sys.stdout)
             for val_data in val_bar:
                 val_images, val_labels = val_data
-                outputs = model(val_images.to(device))
+                outputs = net(val_images.to(device))
                 # loss = loss_function(outputs, test_labels)
                 predict_y = torch.max(outputs, dim=1)[1]
                 acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
 
-                val_bar.desc = "valid epoch[%d/%d] val_accuracy: %.3f " % \
-                               (epoch, epochs, acc / val_step)
-                val_step = val_step + 1
+                val_bar.desc = "valid epoch[{}/{}]".format(epoch + 1,
+                                                           epochs)
         val_accurate = acc / val_num
-        print('[epoch %d]  val_accuracy: %.3f' %
-              (epoch, val_accurate))
-
+        print('[epoch %d] train_loss: %.3f  val_accuracy: %.3f' %
+              (epoch + 1, running_loss / train_steps, val_accurate))
+        schedular.step(metrics=val_accurate)
         if val_accurate > best_acc:
             best_acc = val_accurate
-            save_path = './models/model' + str(best_acc) + '.pth'
-            torch.save(model.state_dict(), save_path)
+            # torch.save(net.state_dict(), save_path)
+            torch.save(net.state_dict(),
+                       './best_' + str(best_acc) + '.pth')
 
-        # 1，训练循环-------------------------------------------------
-        model.train()
-        train_bar = tqdm(trainloader)
-        for step, (features, labels) in enumerate(train_bar, 1):
-            # 梯度清零
-            model.optimizer.zero_grad()
+    print('Finished Training')
 
-            # 正向传播求损失
-            predictions = model(features.to(device))
-            loss = model.loss_func(predictions, labels.to(device))
-            metric = model.metric_func(predictions, labels.to(device))
-
-            # 反向传播求梯度
-            loss.backward()
-            model.optimizer.step()
-            scheduler.step()
-            running_loss += loss.item()
-
-            metric_sum += metric.item()
-            writer.add_scalar('loss', running_loss / sum_step, global_step=sum_step)
-            writer.add_scalar('acc', metric_sum / sum_step, global_step=sum_step)
-            train_bar.desc = ("train epoch[%d/%d] loss:%.3f " + model.metric_name + ":%.3f") % \
-                             (epoch, epochs, running_loss / sum_step, metric_sum / sum_step)
-            sum_step = sum_step + 1
-
-
-    #
-    # torch.save(model.state_dict(), './models//model.pt')
-
-
-def valid_step(model, features, labels):
-    # 预测模式，dropout层不发生作用
-    model.eval()
-
-    predictions = model(features)
-    loss = model.loss_func(predictions, labels)
-    metric = model.metric_func(predictions, labels)
-
-    return loss.item(), metric.item()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='PyTorch ImageNet Inference')
-    parser.add_argument('--data', metavar='DIR', default='D:/ImageNet/data/ImageNet2012',
-                        help='path to dataset')
-    parser.add_argument('--output_dir', metavar='DIR', default='./models/',
-                        help='path to output files')
-    parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
-                        help='number of data loading workers (default: 2)')
-    parser.add_argument('-b', '--batch-size', default=100, type=int,
-                        metavar='N', help='mini-batch size (default: 1)')
-    parser.add_argument('--num-classes', type=int,
-                        default=10, help='Number classes in dataset')
-    parser.add_argument('--width', type=float, default=1.0,
-                        help='Width ratio (default: 1.0)')
-    parser.add_argument('--dropout', type=float, default=0.2, metavar='PCT',
-                        help='Dropout rate (default: 0.2)')
-    parser.add_argument('--num-gpu', type=int, default=1,
-                        help='Number of GPUS to use')
-    args = parser.parse_args()
-
-
-    train(args.data)
+    main()

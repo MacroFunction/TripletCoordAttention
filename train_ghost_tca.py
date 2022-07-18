@@ -7,26 +7,67 @@ import torch.optim as optim
 import torch.nn as nn
 import time
 import os
-from tensorboardX import SummaryWriter
+# from tensorboardX import SummaryWriter
+from LabelSmoothing import LSR
 from ghost_tca2 import ghostnet
+
 
 def train(net, device, epochs, learning_rate,
           weight_decay, dir):
-    optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=weight_decay)
-    # if loss do not change for 5 epochs, change lr*0.1
-    schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, patience=5, verbose=True, eps=1e-5)
-    schedular = GradualWarmupScheduler(optimizer, multiplier=3.0, total_epoch=5, after_scheduler=schedular_r)
-    #schedular = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, eta_min=1e-5, T_max=5)
-    initepoch = 5
-    batch_size = 100
-    loss = nn.CrossEntropyLoss()
-    best_test_acc = 0
-    nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 3])  # number of workers
+    # odel_weight_path = "./models/state_dict_73.98.pth"
+    # model_weight_path = "./mobilenet_v2-b0353104.pth"
+    # assert os.path.exists(model_weight_path), "file {} dose not exist.".format(model_weight_path)
+    # pre_weights = torch.load(model_weight_path, map_location=device)
+    #
+    # pre_dict = {k: v for k, v in pre_weights.items() if
+    #             k in net.state_dict() and net.state_dict()[k].numel() == v.numel()}
+    # missing_keys, unexpected_keys = net.load_state_dict(pre_weights, strict=False)
+    #
+    # # for name, value in net.named_parameters():
+    # #     if (name in missing_keys):
+    # #         value.requires_grad = True
+    # # model.load_state_dict(torch.load("mobilenet_v2-b0353104.pth"))
+    # net.load_state_dict(pre_dict, strict=False)
+    # # optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=learning_rate, momentum=0.9, weight_decay=weight_decay)
+    # schedular = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=weight_decay)
+    # # if loss do not change for 5 epochs, change lr*0.1
+    # # schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, patience=5, verbose=True, eps=1e-5)
+    # # schedular = GradualWarmupScheduler(optimizer, multiplier=3.0, total_epoch=5, after_scheduler=schedular_r)
+    # #schedular = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, eta_min=1e-5, T_max=5)
 
-    writer = SummaryWriter()
+    # loss_function = LSR()
+    model_weight_path = "./models/state_dict_73.98.pth"
+    # pre_weights = torch.load(model_weight_path, map_location=device)
+    # net.load_state_dict(pre_weights, strict=False)
+    #
+    # pre_dict = {k: v for k, v in pre_weights.items() if
+    #             k in net.state_dict() and net.state_dict()[k].numel() == v.numel()}
+    # missing_keys, unexpected_keys = net.load_state_dict(pre_weights, strict=False)
+    #
+    # for name, value in net.named_parameters():
+    #     if (name in missing_keys):
+    #         value.requires_grad = True
+    net.load_state_dict(torch.load("./models/best_73.604_78.13272113867005.pth"))
+    # # net.load_state_dict(pre_dict, strict=False)
+    # optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=learning_rate, momentum=0.9,
+    #                       weight_decay=4e-5)
+    optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9,
+                          weight_decay=4e-5)
+
+    # if loss do not change for 5 epochs, change lr*0.1
+    schedular_r = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3,
+                                                             verbose=True, eps=1e-5)
+    schedular = GradualWarmupScheduler(optimizer, multiplier=5.0, total_epoch=5, after_scheduler=schedular_r)
+    initepoch = 1
+    batch_size = 128
+    loss = LSR()
+    best_test_acc = 0
+    nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 4])  # number of workers
+
+    # writer = SummaryWriter()
     torch.backends.cudnn.benchmark = True
-    traindir = os.path.join(dir, 'ILSVRC2012_img_train')
-    valdir = os.path.join(dir, 'ILSVRC2012_img_val')
+    traindir = os.path.join(dir, 'train')
+    valdir = os.path.join(dir, 'val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     train_loader = torch.utils.data.DataLoader(
@@ -60,8 +101,6 @@ def train(net, device, epochs, learning_rate,
         correct = 0
         total = 0
 
-
-
         net.train()
         timestart = time.time()
 
@@ -83,16 +122,16 @@ def train(net, device, epochs, learning_rate,
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             train_acc = 100.0 * correct / total
-            writer.add_scalar('loss', running_loss / sum_step, global_step=global_step)
-            writer.add_scalar('acc', train_acc, global_step=global_step)
+            # writer.add_scalar('loss', running_loss / sum_step, global_step=global_step)
+            # writer.add_scalar('acc', train_acc, global_step=global_step)
             train_bar.desc = "train epoch[%d/%d] loss:%.3f train_acc:%.3f lr:%.7f" % \
                              (epoch, epochs, running_loss / sum_step, train_acc, optimizer.param_groups[0]['lr'])
             sum_step += 1
             global_step += 1
             # schedular.step(metrics=train_acc)
-        print('epoch %d, loss: %.4f,tran Acc: %.3f%%,time:%3f sec, lr: %.7f'
-              % (epoch+1, running_loss / sum_step, train_acc, time.time() - timestart, optimizer.param_groups[0]['lr']))
-        print(schedular.last_epoch)
+        # print('epoch %d, loss: %.4f,tran Acc: %.3f%%,time:%3f sec, lr: %.7f'
+        #       % (epoch+1, running_loss / sum_step, train_acc, time.time() - timestart, schedular.param_groups[0]['lr']))
+        # print(schedular.last_epoch)
 
         # test
         net.eval()
@@ -109,27 +148,16 @@ def train(net, device, epochs, learning_rate,
                 valcorrect += (predicted == labels).sum().item()
             test_acc = 100.0 * valcorrect / valtotal
             print('test Acc: %.3f%%' % (test_acc))
-            # if epoch > 30:
-            #     torch.save(net.state_dict(), '/root/Desktop/cifar-100/checkpoint_512_512_100/' + str(test_acc) + '_Resnet18.pth')
-            # if test_acc > best_test_acc:
-            #     print('find best! save at checkpoint/cnn_best.pth')
-            #     best_test_acc = test_acc
-            #     best_epoch = epoch
-            torch.save(net.state_dict(),
-                       './models/best_' + str(test_acc) + '_' + str(train_acc) + '.pth')
+            torch.save(net.state_dict(), './models/best_' + str(test_acc) + '_' + str(train_acc) + '.pth')
 
         schedular.step(metrics=test_acc)
-
-
     print('Finished Training')
-    print('best test acc epoch: %d' % epoch+1)
+    print('best test acc epoch: %d' % epoch + 1)
+
 
 if __name__ == '__main__':
-    model = ghostnet(num_classes=1000, width=1.0, dropout=0.2)
+    model = ghostnet()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model_weight_path = "./models/model73.59.pth"
-    pre_weights = torch.load(model_weight_path, map_location=device)
-    model.load_state_dict(pre_weights, strict=False)
     model.to(device)
-    train(net=model, device=device, epochs=200, learning_rate=0.0000892,
-          weight_decay=4e-5, dir='D:/ImageNet/data/ImageNet2012')
+    train(net=model, device=device, epochs=200, learning_rate=1E-5,
+          weight_decay=4e-5, dir='H:/ImageNet')

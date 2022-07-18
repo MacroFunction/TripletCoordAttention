@@ -1,335 +1,257 @@
-__all__ = ['GhostNet']
-
-import math
+# 2020.06.09-Changed for building GhostNet
+#            Huawei Technologies Co., Ltd. <foss@huawei.com>
+"""
+Creates a GhostNet Model as defined in:
+GhostNet: More Features from Cheap Operations By Kai Han, Yunhe Wang, Qi Tian, Jianyuan Guo, Chunjing Xu, Chang Xu.
+https://arxiv.org/abs/1911.11907
+Modified from https://github.com/d-li14/mobilenetv3.pytorch and https://github.com/rwightman/pytorch-image-models
+"""
 import torch
-from torch import nn
-from torchtoolbox.nn import Activation
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+__all__ = ['ghost_net']
 
 
-def make_divisible(v, divisible_by, min_value=None):
+def _make_divisible(v, divisor, min_value=None):
     """
     This function is taken from the original tf repo.
+    It ensures that all layers have a channel number that is divisible by 8
+    It can be seen here:
     https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
     """
     if min_value is None:
-        min_value = divisible_by
-    new_v = max(min_value, int(v + divisible_by / 2) // divisible_by * divisible_by)
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
     # Make sure that round down does not go down by more than 10%.
     if new_v < 0.9 * v:
-        new_v += divisible_by
+        new_v += divisor
     return new_v
 
 
-class SE(nn.Module):
-    def __init__(self, in_c, reduction_ratio=0.25):
-        super(SE, self).__init__()
-        reducation_c = make_divisible(in_c * reduction_ratio, 4)
-        self.block = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_c, reducation_c, kernel_size=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(reducation_c, in_c, kernel_size=1, bias=True),
-            nn.Hardsigmoid()
-        )
+def hard_sigmoid(x, inplace: bool = False):
+    if inplace:
+        return x.add_(3.).clamp_(0., 6.).div_(6.)
+    else:
+        return F.relu6(x + 3.) / 6.
 
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        self.conv1 = nn.Conv2d(in_c, reducation_c, kernel_size=1, stride=1, padding=0)
-        self.bn1 = nn.BatchNorm2d(reducation_c)
-        self.act = nn.ReLU(inplace=True)
-        self.conv_h = nn.Conv2d(reducation_c, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(reducation_c, 1, kernel_size=1, stride=1, padding=0)
+
+class SqueezeExcite(nn.Module):
+    def __init__(self, in_chs, se_ratio=0.25, reduced_base_chs=None,
+                 act_layer=nn.ReLU, gate_fn=hard_sigmoid, divisor=4, **_):
+        super(SqueezeExcite, self).__init__()
+        self.gate_fn = gate_fn
+        reduced_chs = _make_divisible((reduced_base_chs or in_chs) * se_ratio, divisor)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv_reduce = nn.Conv2d(in_chs, reduced_chs, 1, bias=True)
+        self.act1 = act_layer(inplace=True)
+        self.conv_expand = nn.Conv2d(reduced_chs, in_chs, 1, bias=True)
 
     def forward(self, x):
-        n, c, h, w = x.size()
+        x_se = self.avg_pool(x)
+        x_se = self.conv_reduce(x_se)
+        x_se = self.act1(x_se)
+        x_se = self.conv_expand(x_se)
+        x = x * self.gate_fn(x_se)
+        return x
 
-        x_h = self.pool_h(x)
-        x_w = self.pool_w(x).permute(0, 1, 3, 2)
-        y = torch.cat([x_h, x_w], dim=2)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
 
-        x_h, x_w = torch.split(y, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
+class ConvBnAct(nn.Module):
+    def __init__(self, in_chs, out_chs, kernel_size,
+                 stride=1, act_layer=nn.ReLU):
+        super(ConvBnAct, self).__init__()
+        self.conv = nn.Conv2d(in_chs, out_chs, kernel_size, stride, kernel_size // 2, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_chs)
+        self.act1 = act_layer(inplace=True)
 
-        a_h = self.conv_h(x_h).sigmoid()
-        a_w = self.conv_w(x_w).sigmoid()
-
-        return x * self.block(x) * a_w * a_h
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn1(x)
+        x = self.act1(x)
+        return x
 
 
 class GhostModule(nn.Module):
-    def __init__(self, in_c, out_c, kernel_size=1, ratio=2, dw_size=3, stride=1, act=True, act_type='relu'):
+    def __init__(self, inp, oup, kernel_size=1, ratio=2, dw_size=3, stride=1, relu=True):
         super(GhostModule, self).__init__()
-        if ratio != 2:
-            print("Please change output channels manually.")
-        init_c = math.ceil(out_c / ratio)
-        new_c = init_c * (ratio - 1)
+        self.oup = oup
+        init_channels = math.ceil(oup / ratio)
+        new_channels = init_channels * (ratio - 1)
 
         self.primary_conv = nn.Sequential(
-            nn.Conv2d(in_c, init_c, kernel_size, stride, kernel_size // 2, bias=False),
-            nn.BatchNorm2d(init_c),
-            Activation(act_type) if act else nn.Identity()
+            nn.Conv2d(inp, init_channels, kernel_size, stride, kernel_size // 2, bias=False),
+            nn.BatchNorm2d(init_channels),
+            nn.ReLU(inplace=True) if relu else nn.Sequential(),
         )
 
         self.cheap_operation = nn.Sequential(
-            nn.Conv2d(init_c, new_c, dw_size, 1, dw_size // 2, groups=init_c, bias=False),
-            nn.BatchNorm2d(new_c),
-            Activation(act_type) if act else nn.Identity()
+            nn.Conv2d(init_channels, new_channels, dw_size, 1, dw_size // 2, groups=init_channels, bias=False),
+            nn.BatchNorm2d(new_channels),
+            nn.ReLU(inplace=True) if relu else nn.Sequential(),
         )
 
     def forward(self, x):
         x1 = self.primary_conv(x)
         x2 = self.cheap_operation(x1)
         out = torch.cat([x1, x2], dim=1)
-        # if ratio != 2, you need return out[:,:out_c,:,:]
-        return out
+        return out[:, :self.oup, :, :]
 
 
 class GhostBottleneck(nn.Module):
-    def __init__(self, in_c, mid_c, out_c, dw_kernel_size=3, stride=1, se_ratio=None, act_type='relu'):
-        super(GhostBottleneck, self).__init__()
-        self.ghost1 = GhostModule(in_c, mid_c, act=True, act_type=act_type)
-        if stride > 1:
-            self.dw_conv = nn.Sequential(
-                nn.Conv2d(mid_c, mid_c, dw_kernel_size, stride,
-                          dw_kernel_size // 2, groups=mid_c, bias=False),
-                nn.BatchNorm2d(mid_c)
-            )
-        else:
-            self.dw_conv = nn.Identity()
-        self.se = SE(mid_c, reduction_ratio=se_ratio) if se_ratio is not None else nn.Identity()
-        self.ghost2 = GhostModule(mid_c, out_c, act=False, act_type=act_type)
+    """ Ghost bottleneck w/ optional SE"""
 
-        if in_c == out_c and stride == 1:
-            self.shortcut = nn.Identity()
+    def __init__(self, in_chs, mid_chs, out_chs, dw_kernel_size=3,
+                 stride=1, act_layer=nn.ReLU, se_ratio=0.):
+        super(GhostBottleneck, self).__init__()
+        has_se = se_ratio is not None and se_ratio > 0.
+        self.stride = stride
+
+        # Point-wise expansion
+        self.ghost1 = GhostModule(in_chs, mid_chs, relu=True)
+
+        # Depth-wise convolution
+        if self.stride > 1:
+            self.conv_dw = nn.Conv2d(mid_chs, mid_chs, dw_kernel_size, stride=stride,
+                                     padding=(dw_kernel_size - 1) // 2,
+                                     groups=mid_chs, bias=False)
+            self.bn_dw = nn.BatchNorm2d(mid_chs)
+
+        # Squeeze-and-excitation
+        if has_se:
+            self.se = SqueezeExcite(mid_chs, se_ratio=se_ratio)
+        else:
+            self.se = None
+
+        # Point-wise linear projection
+        self.ghost2 = GhostModule(mid_chs, out_chs, relu=False)
+
+        # shortcut
+        if (in_chs == out_chs and self.stride == 1):
+            self.shortcut = nn.Sequential()
         else:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_c, in_c, dw_kernel_size, stride,
-                          dw_kernel_size // 2, groups=in_c, bias=False),
-                nn.BatchNorm2d(in_c),
-                nn.Conv2d(in_c, out_c, 1, bias=False),
-                nn.BatchNorm2d(out_c)
+                nn.Conv2d(in_chs, in_chs, dw_kernel_size, stride=stride,
+                          padding=(dw_kernel_size - 1) // 2, groups=in_chs, bias=False),
+                nn.BatchNorm2d(in_chs),
+                nn.Conv2d(in_chs, out_chs, 1, stride=1, padding=0, bias=False),
+                nn.BatchNorm2d(out_chs),
             )
 
     def forward(self, x):
-        residual = self.shortcut(x)
+        residual = x
+
+        # 1st ghost bottleneck
         x = self.ghost1(x)
-        x = self.dw_conv(x)
-        x = self.se(x)
+
+        # Depth-wise convolution
+        if self.stride > 1:
+            x = self.conv_dw(x)
+            x = self.bn_dw(x)
+
+        # Squeeze-and-excitation
+        if self.se is not None:
+            x = self.se(x)
+
+        # 2nd ghost bottleneck
         x = self.ghost2(x)
-        return x + residual
 
-
-class Stem(nn.Module):
-    def __init__(self, out_c, act_type='relu'):
-        super(Stem, self).__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, out_c, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(out_c),
-            Activation(act_type)
-        )
-
-    def forward(self, x):
-        return self.stem(x)
-
-
-class Head(nn.Module):
-    def __init__(self, in_c, mid_c, out_c, dropout, act_type='relu'):
-        super(Head, self).__init__()
-        self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_c, mid_c, 1, bias=True),
-            Activation(act_type),
-            nn.Flatten(),
-            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-            nn.Linear(mid_c, out_c)
-        )
-
-    def forward(self, x):
-        return self.head(x)
+        x += self.shortcut(residual)
+        return x
 
 
 class GhostNet(nn.Module):
-    def __init__(self, num_classes=1000, width=1.3, dropout=0):
+    def __init__(self, cfgs, num_classes=1000, width=1.0, dropout=0.2):
         super(GhostNet, self).__init__()
-        assert dropout >= 0, "Use = 0 to disable or > 0 to enable."
-        self.width = width
-        stem_c = make_divisible(16 * width, 4)
-        self.stem = Stem(stem_c)
-        self.stage = nn.Sequential(
-            # stage1
-            GhostBottleneck(stem_c, self.get_c(16), self.get_c(16), 3, 1),
-            # stage2
-            GhostBottleneck(self.get_c(16), self.get_c(48), self.get_c(24), 3, 2),
-            GhostBottleneck(self.get_c(24), self.get_c(72), self.get_c(24), 3, 1),
-            # stage3
-            GhostBottleneck(self.get_c(24), self.get_c(72), self.get_c(40), 5, 2, 0.25),
-            GhostBottleneck(self.get_c(40), self.get_c(120), self.get_c(40), 5, 1, 0.25),
-            # stage4
-            GhostBottleneck(self.get_c(40), self.get_c(240), self.get_c(80), 3, 2),
-            GhostBottleneck(self.get_c(80), self.get_c(200), self.get_c(80), 3, 1),
-            GhostBottleneck(self.get_c(80), self.get_c(184), self.get_c(80), 3, 1),
-            GhostBottleneck(self.get_c(80), self.get_c(184), self.get_c(80), 3, 1),
-            GhostBottleneck(self.get_c(80), self.get_c(480), self.get_c(112), 3, 1, 0.25),
-            GhostBottleneck(self.get_c(112), self.get_c(672), self.get_c(112), 3, 1, 0.25),
-            # stage5
-            GhostBottleneck(self.get_c(112), self.get_c(672), self.get_c(160), 5, 2, 0.25),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 5, 1),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 5, 1, 0.25),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 5, 1),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 5, 1, 0.25),
-            # conv-bn-act
-            nn.Conv2d(self.get_c(160), self.get_c(960), 1, bias=False),
-            nn.BatchNorm2d(self.get_c(960)),
-            nn.ReLU(inplace=True),
-        )
+        # setting of inverted residual blocks
+        self.cfgs = cfgs
+        self.dropout = dropout
 
-        self.head = Head(self.get_c(960), 1280, num_classes, dropout)
+        # building first layer
+        output_channel = _make_divisible(16 * width, 4)
+        self.conv_stem = nn.Conv2d(3, output_channel, 3, 2, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(output_channel)
+        self.act1 = nn.ReLU(inplace=True)
+        input_channel = output_channel
 
-    def get_c(self, c):
-        return make_divisible(c * self.width, 4)
+        # building inverted residual blocks
+        stages = []
+        block = GhostBottleneck
+        for cfg in self.cfgs:
+            layers = []
+            for k, exp_size, c, se_ratio, s in cfg:
+                output_channel = _make_divisible(c * width, 4)
+                hidden_channel = _make_divisible(exp_size * width, 4)
+                layers.append(block(input_channel, hidden_channel, output_channel, k, s,
+                                    se_ratio=se_ratio))
+                input_channel = output_channel
+            stages.append(nn.Sequential(*layers))
+
+        output_channel = _make_divisible(exp_size * width, 4)
+        stages.append(nn.Sequential(ConvBnAct(input_channel, output_channel, 1)))
+        input_channel = output_channel
+
+        self.blocks = nn.Sequential(*stages)
+
+        # building last several layers
+        output_channel = 1280
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.conv_head = nn.Conv2d(input_channel, output_channel, 1, 1, 0, bias=True)
+        self.act2 = nn.ReLU(inplace=True)
+        self.classifier = nn.Linear(output_channel, num_classes)
 
     def forward(self, x):
-        x = self.stem(x)
-        x = self.stage(x)
-        x = self.head(x)
+        x = self.conv_stem(x)
+        x = self.bn1(x)
+        x = self.act1(x)
+        x = self.blocks(x)
+        x = self.global_pool(x)
+        x = self.conv_head(x)
+        x = self.act2(x)
+        x = x.view(x.size(0), -1)
+        if self.dropout > 0.:
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.classifier(x)
         return x
 
 
-class GhostNet600(nn.Module):
-    def __init__(self, num_classes=1000, width=1.75, dropout=0.8):
-        super(GhostNet600, self).__init__()
-        assert dropout >= 0, "Use = 0 to disable or > 0 to enable."
-        self.width = width
-        stem_c = make_divisible(16 * width, 4)
-        self.stem = Stem(stem_c, 'h_swish')
-        self.stage = nn.Sequential(
-            # stage1
-            GhostBottleneck(stem_c, self.get_c(16), self.get_c(16), 3, 1, 0.1, 'h_swish'),
-            # stage2
-            GhostBottleneck(self.get_c(16), self.get_c(48), self.get_c(24), 3, 2, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(24), self.get_c(72), self.get_c(24), 3, 1, 0.1, 'h_swish'),
-            # stage3
-            GhostBottleneck(self.get_c(24), self.get_c(72), self.get_c(40), 5, 2, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(40), self.get_c(120), self.get_c(40), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(40), self.get_c(120), self.get_c(40), 3, 1, 0.1, 'h_swish'),
-            # stage4
-            GhostBottleneck(self.get_c(40), self.get_c(240), self.get_c(80), 3, 2, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(80), self.get_c(200), self.get_c(80), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(80), self.get_c(200), self.get_c(80), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(80), self.get_c(200), self.get_c(80), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(80), self.get_c(480), self.get_c(112), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(112), self.get_c(672), self.get_c(112), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(112), self.get_c(672), self.get_c(112), 3, 1, 0.1, 'h_swish'),
-            # stage5
-            GhostBottleneck(self.get_c(112), self.get_c(672), self.get_c(160), 5, 2, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 3, 1, 0.1, 'h_swish'),
-            GhostBottleneck(self.get_c(160), self.get_c(960), self.get_c(160), 3, 1, 0.1, 'h_swish'),
-            # conv-bn-act
-            nn.Conv2d(self.get_c(160), self.get_c(960), 1, bias=False),
-            nn.BatchNorm2d(self.get_c(960)),
-            Activation('h_swish'),
-        )
-
-        self.head = Head(self.get_c(960), 1400, num_classes, dropout, 'h_swish')
-
-    def get_c(self, c):
-        return make_divisible(c * self.width, 4)
-
-    def forward(self, x):
-        x = self.stem(x)
-        x = self.stage(x)
-        x = self.head(x)
-        return x
-
-
-class TinyGhostNet(nn.Module):
-    def __init__(self, width_coeff, depth_coeff, depth_div=4,
-                 min_depth=None, num_classes=1000, dropout=0):
-        super().__init__()
-        assert dropout >= 0, "Use = 0 to disable or > 0 to enable."
-        min_depth = min_depth or depth_div
-
-        def renew_ch(x):
-            if not width_coeff:
-                return x
-
-            new_x = max(min_depth, int(x + depth_div / 2) // depth_div * depth_div)
-            if new_x < 0.9 * new_x:
-                new_x += depth_div
-            return new_x
-
-        def renew_repeat(x):
-            return int(math.ceil(x * depth_coeff))
-
-        self.stem = Stem(renew_ch(28))
-        self.stage = nn.Sequential(
-            # stage1
-            self._make_layer(renew_ch(28), renew_ch(28), 1, 3, 1, renew_repeat(1), 0.1),
-            # stage2
-            self._make_layer(renew_ch(28), renew_ch(44), 3, 3, 2, renew_repeat(1), 0.1),
-            self._make_layer(renew_ch(44), renew_ch(44), 3, 3, 1, renew_repeat(1), 0.1),
-            # stage3
-            self._make_layer(renew_ch(44), renew_ch(72), 3, 3, 2, renew_repeat(1), 0.1),
-            self._make_layer(renew_ch(72), renew_ch(72), 3, 3, 1, renew_repeat(2), 0.1),
-            # stage4
-            self._make_layer(renew_ch(72), renew_ch(140), 6, 3, 2, renew_repeat(1), 0.1),
-            self._make_layer(renew_ch(140), renew_ch(140), 2.5, 3, 1, renew_repeat(3), 0.1),
-            self._make_layer(renew_ch(140), renew_ch(196), 6, 3, 1, renew_repeat(3), 0.1),
-            # stage5
-            self._make_layer(renew_ch(196), renew_ch(280), 6, 3, 2, renew_repeat(1), 0.1),
-            self._make_layer(renew_ch(280), renew_ch(280), 6, 3, 1, renew_repeat(5), 0.1),
-            nn.Conv2d(renew_ch(280), renew_ch(1680), 1, bias=False),
-            nn.BatchNorm2d(renew_ch(1680)),
-            nn.ReLU(inplace=True)
-        )
-        self.head = Head(renew_ch(1680), renew_ch(1400), num_classes, dropout)
-
-    def _make_layer(self, in_c, out_c, expand, kernel_size, stride, repeats, se_ratio):
-        layers = []
-
-        layers.append(GhostBottleneck(in_c, int(in_c * expand), out_c, kernel_size, stride, se_ratio))
-        for _ in range(repeats - 1):
-            layers.append(GhostBottleneck(out_c, int(out_c * expand), out_c, kernel_size, 1, se_ratio))
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        x = self.stem(x)
-        x = self.stage(x)
-        x = self.head(x)
-        return x
-
-
-def GhostNetA(num_classes=1000, dropout=0, **kwargs):
-    return TinyGhostNet(1., 1., num_classes=num_classes, dropout=dropout, **kwargs)
+def ghostnet(**kwargs):
+    """
+    Constructs a GhostNet model
+    """
+    cfgs = [
+        # k, t, c, SE, s 
+        # stage1
+        [[3, 16, 16, 0, 1]],
+        # stage2
+        [[3, 48, 24, 0, 2]],
+        [[3, 72, 24, 0, 1]],
+        # stage3
+        [[5, 72, 40, 0.25, 2]],
+        [[5, 120, 40, 0.25, 1]],
+        # stage4
+        [[3, 240, 80, 0, 2]],
+        [[3, 200, 80, 0, 1],
+         [3, 184, 80, 0, 1],
+         [3, 184, 80, 0, 1],
+         [3, 480, 112, 0.25, 1],
+         [3, 672, 112, 0.25, 1]
+         ],
+        # stage5
+        [[5, 672, 160, 0.25, 2]],
+        [[5, 960, 160, 0, 1],
+         [5, 960, 160, 0.25, 1],
+         [5, 960, 160, 0, 1],
+         [5, 960, 160, 0.25, 1]
+         ]
+    ]
+    return GhostNet(cfgs, **kwargs)
 
 
 if __name__ == '__main__':
-    from torchsummary import summary
-
-    # model = GhostNet()
-    # print(model)
-    # model.load_state_dict(torch.load('./models/model75.78.pth'), strict=False)
-    #
-    # x = torch.rand(size=(3, 224, 224))
-    # summary(model, (3, 224, 224))
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = GhostNet().to(device)
+    model = ghostnet()
     model.eval()
-    model_weight_path = "./models/model75.78.pth"
-
-    model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
     print(model)
-    input = torch.randn(1, 3, 320, 256)
-    input=input.to(device)
+    input = torch.randn(32, 3, 320, 256)
     y = model(input)
     print(y.size())
-    # torch.onnx.export(model,
-    #                   input,
-    #                   "ghost.onnx", verbose=True)
-    summary(model, (3, 320, 256))  # 输出网络结构

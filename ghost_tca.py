@@ -26,43 +26,34 @@ class h_swish(nn.Module):
         return x * self.sigmoid(x)
 
 class TripletCoordAtt(nn.Module):
-    def __init__(self, inp, reduction=16):
+    def __init__(self, k_size=3):
         super(TripletCoordAtt, self).__init__()
         self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
         self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
         self.pool_c = nn.AdaptiveAvgPool2d(1)
 
-        mip = max(4, inp // reduction)
+        self.conv_h = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_w = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
 
-        self.conv1 = nn.Conv2d(1, mip, kernel_size=1, stride=1, padding=0)
-        self.bn1 = nn.BatchNorm2d(mip)
-        self.act = h_swish()
-
-        self.conv_h = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
-        self.conv_c = nn.Conv2d(mip, 1, kernel_size=1, stride=1, padding=0)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         identity = x
 
         n, c, h, w = x.size()
-        x_w = self.pool_w(x)
-        x_h = self.pool_h(x).permute(0, 1, 3, 2)
-        x_c = self.pool_c(x).permute(0, 3, 2, 1)
+        x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
+        x_h = self.pool_h(x).squeeze(-1)
+        x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
 
-        y = torch.cat([x_w, x_h, x_c], dim=3)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
+        o_h = self.sigmoid(self.conv_h(x_h).unsqueeze(-1))
+        o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
+        o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
 
-        x_w, x_h, x_c = torch.split(y, [w, h, c], dim=3)
-
-        a_w = self.conv_w(x_w).sigmoid()
-        a_h = self.conv_h(x_h).sigmoid().permute(0, 1, 3, 2)
-        a_c = self.conv_h(x_c).sigmoid().permute(0, 3, 2, 1)
-
-        out = identity * a_w * a_h * a_c
-
+        out = identity * o_w * o_h * o_c
         return out
 
 
@@ -171,7 +162,7 @@ class GhostBottleneck(nn.Module):
 
 
         if has_tca:
-            self.tca = TripletCoordAtt(mid_chs)
+            self.tca = TripletCoordAtt()
         else:
             self.tca = None
 

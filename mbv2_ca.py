@@ -4,7 +4,8 @@ import math
 import numpy as np
 import torch.nn.functional as F
 import torchvision
-import hiddenlayer as h
+import hidde
+nlayer as h
 from torchsummary import summary
 count = 0
 
