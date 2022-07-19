@@ -1,11 +1,4 @@
-# 2020.06.09-Changed for main script for testing GhostNet on ImageNet
-#            Huawei Technologies Co., Ltd. <foss@huawei.com>
-"""PyTorch Inference Script
 
-An example inference script that outputs top-k class ids for images in a folder into a csv.
-
-Hacked together by Ross Wightman (https://github.com/rwightman)
-"""
 import os
 import time
 import argparse
