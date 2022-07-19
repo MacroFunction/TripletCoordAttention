@@ -1,4 +1,11 @@
-
+# 2020.06.09-Changed for building GhostNet
+#            Huawei Technologies Co., Ltd. <foss@huawei.com>
+"""
+Creates a GhostNet Model as defined in:
+GhostNet: More Features from Cheap Operations By Kai Han, Yunhe Wang, Qi Tian, Jianyuan Guo, Chunjing Xu, Chang Xu.
+https://arxiv.org/abs/1911.11907
+Modified from https://github.com/d-li14/mobilenetv3.pytorch and https://github.com/rwightman/pytorch-image-models
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,54 +14,6 @@ import math
 from torchsummary import summary
 
 __all__ = ['ghost_net']
-
-class h_sigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_sigmoid, self).__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return self.relu(x + 3) / 6
-
-
-class h_swish(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_swish, self).__init__()
-        self.sigmoid = h_sigmoid(inplace=inplace)
-
-    def forward(self, x):
-        return x * self.sigmoid(x)
-
-class TripletCoordAtt(nn.Module):
-    def __init__(self, k_size=3):
-        super(TripletCoordAtt, self).__init__()
-        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
-        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
-        self.pool_c = nn.AdaptiveAvgPool2d(1)
-
-        self.conv_h = nn.Conv1d(1, 1, kernel_size=k_size,
-                                padding=(k_size - 1) // 2, bias=False)
-        self.conv_w = nn.Conv1d(1, 1, kernel_size=k_size,
-                                padding=(k_size - 1) // 2, bias=False)
-        self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
-                                padding=(k_size - 1) // 2, bias=False)
-
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        identity = x
-
-        n, c, h, w = x.size()
-        x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
-        x_h = self.pool_h(x).squeeze(-1)
-        x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
-
-        o_h = self.sigmoid(self.conv_h(x_h).unsqueeze(-1))
-        o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
-        o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
-
-        out = identity * o_w * o_h * o_c
-        return out
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -80,25 +39,32 @@ def hard_sigmoid(x, inplace: bool = False):
         return F.relu6(x + 3.) / 6.
 
 
-class SqueezeExcite(nn.Module):
-    def __init__(self, in_chs, se_ratio=0.25, reduced_base_chs=None,
-                 act_layer=nn.ReLU, gate_fn=hard_sigmoid, divisor=4, **_):
-        super(SqueezeExcite, self).__init__()
-        self.gate_fn = gate_fn
-        reduced_chs = _make_divisible((reduced_base_chs or in_chs) * se_ratio, divisor)
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv_reduce = nn.Conv2d(in_chs, reduced_chs, 1, bias=True)
-        self.act1 = act_layer(inplace=True)
-        self.conv_expand = nn.Conv2d(reduced_chs, in_chs, 1, bias=True)
+class TripletCoordAtt(nn.Module):
+    def __init__(self, k_size=5):
+        super(TripletCoordAtt, self).__init__()
+        self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
+        self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
+        self.pool_c = nn.AdaptiveAvgPool2d(1)
+
+        self.conv_h = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_w = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+        self.conv_c = nn.Conv1d(1, 1, kernel_size=k_size,
+                                padding=(k_size - 1) // 2, bias=False)
+
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x_se = self.avg_pool(x)
-        x_se = self.conv_reduce(x_se)
-        x_se = self.act1(x_se)
-        x_se = self.conv_expand(x_se)
-        x = x * self.gate_fn(x_se)
-        return x
+        x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
+        x_h = self.pool_h(x).squeeze(-1)
+        x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
 
+        o_h = self.sigmoid(self.conv_h(x_h).unsqueeze(-1))
+        o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
+        o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
+
+        return x * o_w * o_h * o_c
 
 class ConvBnAct(nn.Module):
     def __init__(self, in_chs, out_chs, kernel_size,
@@ -145,9 +111,9 @@ class GhostBottleneck(nn.Module):
     """ Ghost bottleneck w/ optional SE"""
 
     def __init__(self, in_chs, mid_chs, out_chs, dw_kernel_size=3,
-                 stride=1, act_layer=nn.ReLU, tca_ratio=0.):
+                 stride=1, act_layer=nn.ReLU, se_ratio=0.):
         super(GhostBottleneck, self).__init__()
-        has_tca = tca_ratio is not None and tca_ratio > 0.
+        has_se = se_ratio is not None and se_ratio > 0.
         self.stride = stride
 
         # Point-wise expansion
@@ -160,8 +126,8 @@ class GhostBottleneck(nn.Module):
                                      groups=mid_chs, bias=False)
             self.bn_dw = nn.BatchNorm2d(mid_chs)
 
-
-        if has_tca:
+        # Squeeze-and-excitation
+        if has_se:
             self.tca = TripletCoordAtt()
         else:
             self.tca = None
@@ -222,11 +188,11 @@ class GhostNet(nn.Module):
         block = GhostBottleneck
         for cfg in self.cfgs:
             layers = []
-            for k, exp_size, c, tca_ratio, s in cfg:
+            for k, exp_size, c, se_ratio, s in cfg:
                 output_channel = _make_divisible(c * width, 4)
                 hidden_channel = _make_divisible(exp_size * width, 4)
                 layers.append(block(input_channel, hidden_channel, output_channel, k, s,
-                                    tca_ratio=tca_ratio))
+                                    se_ratio=se_ratio))
                 input_channel = output_channel
             stages.append(nn.Sequential(*layers))
 
@@ -295,12 +261,9 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = ghostnet().to(device)
     model.eval()
-    model_weight_path = "./models/state_dict_73.98.pth"
-
-    model.load_state_dict(torch.load(model_weight_path, map_location=device), False)
     print(model)
     input = torch.randn(1, 3, 320, 256)
-    input=input.to(device)
+    input = input.to(device)
     y = model(input)
     print(y.size())
     # torch.onnx.export(model,

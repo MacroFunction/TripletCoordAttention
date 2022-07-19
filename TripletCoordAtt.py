@@ -4,7 +4,7 @@ from torchsummary import summary
 
 
 class TripletCoordAtt(nn.Module):
-    def __init__(self, k_size=3):
+    def __init__(self, k_size=5):
         super(TripletCoordAtt, self).__init__()
         self.pool_w = nn.AdaptiveAvgPool3d((1, 1, None))
         self.pool_h = nn.AdaptiveAvgPool3d((1, None, 1))
@@ -18,10 +18,8 @@ class TripletCoordAtt(nn.Module):
                                 padding=(k_size - 1) // 2, bias=False)
 
         self.sigmoid = nn.Sigmoid()
-    def forward(self, x):
-        identity = x
 
-        n, c, h, w = x.size()
+    def forward(self, x):
         x_w = self.pool_w(x).transpose(-1, -2).squeeze(-1)
         x_h = self.pool_h(x).squeeze(-1)
         x_c = self.pool_c(x).squeeze(-1).transpose(-1, -2)
@@ -30,8 +28,7 @@ class TripletCoordAtt(nn.Module):
         o_w = self.sigmoid(self.conv_w(x_w).unsqueeze(-1).transpose(-1, -2))
         o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
 
-        out = identity * o_w * o_h * o_c
-        return out
+        return x * o_w * o_h * o_c
 
 
 def main():
