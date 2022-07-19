@@ -47,7 +47,7 @@ def train(net, device, epochs, learning_rate,
     # for name, value in net.named_parameters():
     #     if (name in missing_keys):
     #         value.requires_grad = True
-    net.load_state_dict(torch.load("./models/best_73.604_78.13272113867005.pth"))
+    net.load_state_dict(torch.load("./models/best_75.02_81.72438168914944.pth"))
     # # net.load_state_dict(pre_dict, strict=False)
     # optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=learning_rate, momentum=0.9,
     #                       weight_decay=4e-5)
