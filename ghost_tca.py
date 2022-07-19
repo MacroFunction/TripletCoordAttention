@@ -224,12 +224,10 @@ class GhostNet(nn.Module):
         return x
 
 
-def ghostnet(**kwargs):
-    """
-    Constructs a GhostNet model
-    """
+def ghostnet_tca(**kwargs):
+
     cfgs = [
-        # k, t, c, SE, s
+        # k, t, c, TCA, s
         # stage1
         [[3, 16, 16, 0, 1]],
         # stage2
@@ -259,7 +257,7 @@ def ghostnet(**kwargs):
 
 if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = ghostnet().to(device)
+    model = ghostnet_tca().to(device)
     model.eval()
     print(model)
     input = torch.randn(1, 3, 320, 256)

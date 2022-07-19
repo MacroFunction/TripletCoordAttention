@@ -16,9 +16,8 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-# from ghost_tca2 import ghostnet
+from ghost_tca import ghostnet_tca
 
-from model_v2 import MobileNetV2
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Inference')
@@ -43,22 +42,10 @@ parser.add_argument('--num-gpu', type=int, default=1,
 def main():
     args = parser.parse_args()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = MobileNetV2(num_classes=1000)
-    model.load_state_dict(torch.load("mobilenet_v2-b0353104.pth"))
-    model_weight_path = "mobilenet_v2-b0353104.pth"
-    pre_weights = torch.load(model_weight_path, map_location=device)
+    model = ghostnet_tca(num_classes=1000).to(device)
+    weight = './models/state_dict_75.02.pth'
+    model.load_state_dict(torch.load(weight))
 
-    # model_state_dict = {key[8, -1]: pre_weights['model'][key] for key in
-    #                     pre_weights['model']}
-    # model_state_dict = {}
-    # for k in pre_weights['model']:
-    #     model_state_dict[k[7:]] = pre_weights['model'][k]
-
-
-    # delete classifier weights
-    # pre_dict = {k: v for k, v in pre_weights.items() if k in model.state_dict() and model.state_dict()[k].numel() == v.numel()}
-    # missing_keys, unexpected_keys = model.load_state_dict(model_state_dict, strict=False)
-    # torch.save(model.state_dict(), './models//model75.78.pth')
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
     elif args.num_gpu < 1:
@@ -162,7 +149,6 @@ def accuracy(output, target, topk=(1,)):
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
     return [correct[:k].contiguous().view(-1).float().sum(0) * 100. / batch_size for k in topk]
-
 
 if __name__ == '__main__':
     main()

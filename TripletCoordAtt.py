@@ -49,12 +49,7 @@ def main():
     input = torch.rand([4,64,32,32])
     input = input.to(device)
     output = attention_block(input)
-    print(attention_block)
-    # # model.load_state_dict(torch.load('./models/model75.78.pth'), strict=False)
-    #
-    # # x = torch.rand(size=(3, 224, 224))
     summary(attention_block, (3, 224, 224))
-    # print(input.size(), output.size())
 
 if __name__ == '__main__':
     main()
