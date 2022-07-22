@@ -1,8 +1,7 @@
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 from torchsummary import summary
 
@@ -10,12 +9,7 @@ __all__ = ['ghost_net']
 
 
 def _make_divisible(v, divisor, min_value=None):
-    """
-    This function is taken from the original tf repo.
-    It ensures that all layers have a channel number that is divisible by 8
-    It can be seen here:
-    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
-    """
+
     if min_value is None:
         min_value = divisor
     new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
@@ -58,6 +52,7 @@ class TripletCoordAtt(nn.Module):
         o_c = self.sigmoid(self.conv_c(x_c).transpose(-1, -2).unsqueeze(-1))
 
         return x * o_w * o_h * o_c
+
 
 class ConvBnAct(nn.Module):
     def __init__(self, in_chs, out_chs, kernel_size,
@@ -129,7 +124,7 @@ class GhostBottleneck(nn.Module):
         self.ghost2 = GhostModule(mid_chs, out_chs, relu=False)
 
         # shortcut
-        if (in_chs == out_chs and self.stride == 1):
+        if in_chs == out_chs and self.stride == 1:
             self.shortcut = nn.Sequential()
         else:
             self.shortcut = nn.Sequential(
@@ -162,9 +157,9 @@ class GhostBottleneck(nn.Module):
         return x
 
 
-class GhostNet(nn.Module):
+class GhostNet_TCA(nn.Module):
     def __init__(self, cfgs, num_classes=1000, width=1.0, dropout=0.2):
-        super(GhostNet, self).__init__()
+        super(GhostNet_TCA, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = cfgs
         self.dropout = dropout
@@ -217,8 +212,7 @@ class GhostNet(nn.Module):
         return x
 
 
-def ghostnet_tca(**kwargs):
-
+def ghost_tca(**kwargs):
     cfgs = [
         # k, t, c, TCA, s
         # stage1
@@ -245,19 +239,15 @@ def ghostnet_tca(**kwargs):
          [5, 960, 160, 0.25, 1]
          ]
     ]
-    return GhostNet(cfgs, **kwargs)
+    return GhostNet_TCA(cfgs, **kwargs)
 
 
 if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = ghostnet_tca().to(device)
+    model = ghost_tca().to(device)
     model.eval()
     print(model)
-    input = torch.randn(1, 3, 320, 256)
-    input = input.to(device)
-    y = model(input)
+    input_data = torch.randn(1, 3, 320, 256).to(device)
+    y = model(input_data)
     print(y.size())
-    # torch.onnx.export(model,
-    #                   input,
-    #                   "ghost.onnx", verbose=True)
-    summary(model, (3, 320, 256))  # 输出网络结构
+    summary(model, (3, 320, 256))
