@@ -9,12 +9,12 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from ghost_tca import ghostnet_tca
+from ghost_tca import ghost_tca
 
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Inference')
-parser.add_argument('--data', metavar='DIR', default='H:/ImageNet',
+parser.add_argument('--data', metavar='DIR', default='I:/ImageNet',
                     help='path to dataset')
 parser.add_argument('--output_dir', metavar='DIR', default='/cache/models/',
                     help='path to output files')
@@ -35,8 +35,8 @@ parser.add_argument('--num-gpu', type=int, default=1,
 def main():
     args = parser.parse_args()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = ghostnet_tca(num_classes=1000).to(device)
-    weight = './models/state_dict_75.02.pth'
+    model = ghost_tca(num_classes=1000).to(device)
+    weight = './models/state_dict_75.134.pth'
     model.load_state_dict(torch.load(weight))
 
     if args.num_gpu > 1:
